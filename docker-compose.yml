@@ -10,6 +10,8 @@ services:
     volumes:
       # MCP видит ТОЛЬКО папку PROJECTS_DIR из .env — больше ничего на сервере
       - ${PROJECTS_DIR:-./projects}:/data
+      # Переопределения настроек из панели (только чтение)
+      - ./dashboard-data:/config:ro
     networks:
       - web
 
@@ -20,9 +22,10 @@ services:
     env_file: .env
     command: ["python", "dashboard.py"]
     volumes:
-      # Панель работает в режиме только-чтение: смотреть и скачивать можно,
-      # изменять файлы может только MCP
+      # Панель работает с проектами в режиме только-чтение
       - ${PROJECTS_DIR:-./projects}:/data:ro
+      # А вот свои настройки (overrides.json) панель может писать
+      - ./dashboard-data:/config
     networks:
       - web
 

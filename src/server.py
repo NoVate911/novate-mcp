@@ -5,22 +5,25 @@ from pathlib import Path
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 
+import settings
+
 # ============================================================
-# Все настройки приходят из .env (через env_file в docker-compose.yml)
+# Настройки: .env — значения по умолчанию; переопределения из
+# панели (overrides.json) имеют приоритет. Читаются при старте
+# контейнера, поэтому после смены в панели: docker compose restart mcp
 # ============================================================
 
 # Секретный токен доступа (обязателен, генерируется install.sh)
-MCP_TOKEN = os.environ.get("MCP_TOKEN")
+MCP_TOKEN = settings.get("MCP_TOKEN")
 if not MCP_TOKEN:
     raise RuntimeError("MCP_TOKEN is not set! Проверь файл .env")
 
 # Папка ВНУТРИ контейнера, в которую смонтирована папка PROJECTS_DIR с хоста.
-# Все инструменты работают только внутри неё. Менять имеет смысл
-# только вместе с путём монтирования в docker-compose.yml.
+# Все инструменты работают только внутри неё.
 DATA_DIR = Path(os.environ.get("MCP_DATA_DIR", "/data")).resolve()
 
 # Публичный домен сервера (используется в описаниях инструментов)
-DOMAIN = os.environ.get("DOMAIN", "").strip()
+DOMAIN = settings.get("DOMAIN")
 PROJECTS_URL = "https://" + DOMAIN + "/projects/" if DOMAIN else ""
 
 # Авторизация: только запросы с заголовком "Authorization: Bearer <MCP_TOKEN>"

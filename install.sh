@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Установщик MCP-сервера для Notion AI (Ubuntu 24.04)
+# Установщик NoVate MCP — MCP-сервера для Notion AI (Ubuntu 24.04)
 #
 # Код проекта НЕ копируется на сервер: GitHub Actions собирает
 # Docker-образ и кладёт его в GHCR (ghcr.io/novate911/novate-mcp).
@@ -120,8 +120,9 @@ case "$PROJECTS_DIR" in
 esac
 
 echo ""
-echo "=== [7/7] Папка проектов, образы и запуск ==="
+echo "=== [7/7] Папки, образы и запуск ==="
 mkdir -p "$PROJECTS_ABS"
+mkdir -p "$BASE_DIR/dashboard-data"
 
 # Перенос данных из старого named volume (самая первая версия)
 if [ -z "$(ls -A "$PROJECTS_ABS" 2>/dev/null)" ]; then
@@ -134,6 +135,7 @@ fi
 
 # Права для пользователя контейнера (uid 1000)
 chown -R 1000:1000 "$PROJECTS_ABS" 2>/dev/null || chmod 777 "$PROJECTS_ABS"
+chown -R 1000:1000 "$BASE_DIR/dashboard-data" 2>/dev/null || chmod 777 "$BASE_DIR/dashboard-data"
 
 # Скачиваем свежие образы, собранные GitHub Actions
 if ! docker compose pull; then

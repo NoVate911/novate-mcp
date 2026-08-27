@@ -6,10 +6,10 @@ RUN pip install --no-cache-dir fastmcp "fastapi" "uvicorn[standard]"
 
 # Работаем НЕ от root — отдельный пользователь
 RUN useradd --create-home appuser \
-    && mkdir -p /data \
-    && chown -R appuser:appuser /data
+    && mkdir -p /data /config \
+    && chown -R appuser:appuser /data /config
 
-COPY server.py dashboard.py ./
+COPY src/ ./
 
 USER appuser
 

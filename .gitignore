@@ -2,6 +2,7 @@
 .env
 projects/
 sites/
+dashboard-data/
 
 # Python-мусор
 __pycache__/
