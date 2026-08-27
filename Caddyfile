@@ -1,0 +1,18 @@
+# {$DOMAIN} подставляется из .env (передаётся через docker-compose)
+{$DOMAIN} {
+	# MCP-эндпоинт -> контейнер с FastMCP
+	handle /mcp* {
+		reverse_proxy mcp:8000
+	}
+
+	# Статика: всё, что ИИ создаст в разрешённой папке, видно в браузере
+	handle_path /sites/* {
+		root * /srv/sites
+		file_server browse
+	}
+
+	# Всё остальное — заглушка-проверка
+	handle {
+		respond "MCP server is running. Endpoint: /mcp/" 200
+	}
+}

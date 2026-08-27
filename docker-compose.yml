@@ -1,0 +1,39 @@
+# Все значения ${...} подставляются из файла .env автоматически
+services:
+  mcp:
+    build: .
+    container_name: fastmcp-server
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # MCP видит ТОЛЬКО папку SITES_DIR из .env — больше ничего на сервере
+      - ${SITES_DIR:-./sites}:/data
+    networks:
+      - web
+
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Домен для Caddyfile берётся из .env
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ${SITES_DIR:-./sites}:/srv/sites:ro
+    networks:
+      - web
+    depends_on:
+      - mcp
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  web:
