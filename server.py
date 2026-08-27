@@ -14,14 +14,14 @@ MCP_TOKEN = os.environ.get("MCP_TOKEN")
 if not MCP_TOKEN:
     raise RuntimeError("MCP_TOKEN is not set! Проверь файл .env")
 
-# Папка ВНУТРИ контейнера, в которую смонтирована папка SITES_DIR с хоста.
+# Папка ВНУТРИ контейнера, в которую смонтирована папка PROJECTS_DIR с хоста.
 # Все инструменты работают только внутри неё. Менять имеет смысл
 # только вместе с путём монтирования в docker-compose.yml.
 DATA_DIR = Path(os.environ.get("MCP_DATA_DIR", "/data")).resolve()
 
 # Публичный домен сервера (используется в описаниях инструментов)
 DOMAIN = os.environ.get("DOMAIN", "").strip()
-SITES_URL = f"https://{DOMAIN}/sites/" if DOMAIN else ""
+PROJECTS_URL = "https://" + DOMAIN + "/projects/" if DOMAIN else ""
 
 # Авторизация: только запросы с заголовком "Authorization: Bearer <MCP_TOKEN>"
 auth = StaticTokenVerifier(
@@ -41,16 +41,16 @@ def safe_path(path: str) -> Path:
 
 _run_desc = (
     "Выполнить shell-команду на сервере в изолированном Docker-контейнере.\n\n"
-    f"Рабочая директория строго ограничена разрешённой папкой ({DATA_DIR}).\n"
+    f"Рабочая директория строго ограничена папкой проектов ({DATA_DIR}).\n"
 )
-if SITES_URL:
-    _run_desc += f"Всё созданное в ней видно в браузере: {SITES_URL}<путь>\n"
+if PROJECTS_URL:
+    _run_desc += f"Созданные проекты видны в браузере: {PROJECTS_URL}<имя проекта>\n"
 
 
 @mcp.tool(description=_run_desc)
 def run_command(command: str, timeout: int = 120) -> str:
     """Args:
-        command: Команда для выполнения (например, "mkdir -p coffee").
+        command: Команда для выполнения (например, "mkdir -p landing").
         timeout: Лимит времени в секундах (по умолчанию 120, максимум 600).
     """
     timeout = min(max(timeout, 1), 600)
@@ -75,10 +75,10 @@ def run_command(command: str, timeout: int = 120) -> str:
 
 @mcp.tool
 def write_file(path: str, content: str) -> str:
-    """Создать или перезаписать текстовый файл в разрешённой папке сервера.
+    """Создать или перезаписать текстовый файл в папке проектов на сервере.
 
     Args:
-        path: Путь относительно разрешённой папки (например, "coffee/index.html").
+        path: Путь относительно папки проектов (например, "landing/index.html").
         content: Полное содержимое файла.
     """
     target = safe_path(path)
@@ -89,10 +89,10 @@ def write_file(path: str, content: str) -> str:
 
 @mcp.tool
 def read_file(path: str) -> str:
-    """Прочитать текстовый файл из разрешённой папки сервера.
+    """Прочитать текстовый файл из папки проектов на сервере.
 
     Args:
-        path: Путь относительно разрешённой папки (например, "coffee/index.html").
+        path: Путь относительно папки проектов (например, "landing/index.html").
     """
     target = safe_path(path)
     if not target.is_file():
@@ -105,10 +105,10 @@ def read_file(path: str) -> str:
 
 @mcp.tool
 def list_files(path: str = ".") -> str:
-    """Показать список файлов и папок в разрешённой папке сервера.
+    """Показать список проектов и файлов на сервере.
 
     Args:
-        path: Подпапка относительно разрешённой папки (по умолчанию — вся она).
+        path: Подпапка относительно папки проектов (по умолчанию — вся она).
     """
     target = safe_path(path)
     if not target.is_dir():

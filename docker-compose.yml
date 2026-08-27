@@ -1,13 +1,28 @@
-# Все значения ${...} подставляются из файла .env автоматически
+# Код НЕ собирается на сервере — используется готовый образ из GHCR,
+# который собирает GitHub Actions. Обновление: docker compose pull && docker compose up -d
 services:
   mcp:
-    build: .
+    image: ghcr.io/novate911/novate-mcp:latest
     container_name: fastmcp-server
     restart: unless-stopped
     env_file: .env
+    command: ["python", "server.py"]
     volumes:
-      # MCP видит ТОЛЬКО папку SITES_DIR из .env — больше ничего на сервере
-      - ${SITES_DIR:-./sites}:/data
+      # MCP видит ТОЛЬКО папку PROJECTS_DIR из .env — больше ничего на сервере
+      - ${PROJECTS_DIR:-./projects}:/data
+    networks:
+      - web
+
+  dashboard:
+    image: ghcr.io/novate911/novate-mcp:latest
+    container_name: mcp-dashboard
+    restart: unless-stopped
+    env_file: .env
+    command: ["python", "dashboard.py"]
+    volumes:
+      # Панель работает в режиме только-чтение: смотреть и скачивать можно,
+      # изменять файлы может только MCP
+      - ${PROJECTS_DIR:-./projects}:/data:ro
     networks:
       - web
 
@@ -25,11 +40,12 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-      - ${SITES_DIR:-./sites}:/srv/sites:ro
+      - ${PROJECTS_DIR:-./projects}:/srv/projects:ro
     networks:
       - web
     depends_on:
       - mcp
+      - dashboard
 
 volumes:
   caddy_data:

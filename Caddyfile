@@ -5,14 +5,14 @@
 		reverse_proxy mcp:8000
 	}
 
-	# Статика: всё, что ИИ создаст в разрешённой папке, видно в браузере
-	handle_path /sites/* {
-		root * /srv/sites
-		file_server browse
+	# Опубликованные проекты (сайты, созданные ИИ) — публичный просмотр
+	handle_path /projects/* {
+		root * /srv/projects
+		file_server
 	}
 
-	# Всё остальное — заглушка-проверка
+	# Всё остальное (включая главную /) -> защищённая панель управления
 	handle {
-		respond "MCP server is running. Endpoint: /mcp/" 200
+		reverse_proxy dashboard:8001
 	}
 }

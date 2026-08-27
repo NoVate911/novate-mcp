@@ -2,10 +2,11 @@
 # ============================================================
 # Установщик MCP-сервера для Notion AI (Ubuntu 24.04)
 #
-# Файлы проекта (server.py, Dockerfile, docker-compose.yml,
-# Caddyfile, .env.example) НЕ вшиты в этот скрипт — они
-# скачиваются из GitHub-репозитория, чтобы всегда брать
-# последние версии.
+# Код проекта НЕ копируется на сервер: GitHub Actions собирает
+# Docker-образ и кладёт его в GHCR (ghcr.io/novate911/novate-mcp).
+# Сервер скачивает готовый образ через docker compose pull.
+# Этот скрипт забирает из репозитория только 3 инфра-файла:
+# docker-compose.yml, Caddyfile, .env.example
 #
 # Запуск от root:  bash install.sh
 # ============================================================
@@ -13,8 +14,7 @@
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
-# Откуда скачивать проект и куда ставить
-REPO_URL="https://github.com/NoVate911/novate-mcp.git"
+REPO_RAW="https://raw.githubusercontent.com/NoVate911/novate-mcp/main"
 BASE_DIR="${BASE_DIR:-$HOME/mcp-server}"
 
 echo ""
@@ -30,8 +30,8 @@ apt update
 apt upgrade -y
 
 echo ""
-echo "=== [3/7] Docker и git ==="
-apt install -y git curl
+echo "=== [3/7] Docker ==="
+apt install -y curl
 if command -v docker >/dev/null 2>&1; then
   echo "Docker уже установлен — пропускаю."
 else
@@ -53,131 +53,120 @@ ufw allow 443/tcp   # HTTPS
 ufw --force enable
 
 echo ""
-echo "=== [5/7] Файлы проекта из GitHub ==="
-echo "Репозиторий: $REPO_URL"
-
-# Быстрая проверка доступности репозитория ДО любых изменений
-if ! git ls-remote "$REPO_URL" HEAD >/dev/null 2>&1; then
-  echo ""
-  echo "!!! ОШИБКА: не могу получить доступ к репозиторию:"
-  echo "    $REPO_URL"
-  echo ""
-  echo "    Возможные причины:"
-  echo "    - репозиторий приватный или удалён"
-  echo "    - опечатка в URL"
-  echo "    - на сервере нет доступа в интернет"
-  echo ""
-  echo "    Ничего не изменено, установка остановлена."
-  exit 1
-fi
-
-if [ -d "$BASE_DIR/.git" ]; then
-  # Проект уже клонирован ранее — просто тянем последнюю версию
-  echo "Папка $BASE_DIR уже связана с репозиторием — обновляю (git pull)..."
-  if ! git -C "$BASE_DIR" pull --ff-only; then
-    echo ""
-    echo "!!! ОШИБКА: git pull не удался — в $BASE_DIR есть локальные изменения."
-    echo "    Разберись с ними вручную, либо сохрани .env и sites/,"
-    echo "    удали папку $BASE_DIR и запусти скрипт заново."
-    exit 1
-  fi
-else
-  BACKUP_DIR=""
-  if [ -d "$BASE_DIR" ]; then
-    echo "Папка $BASE_DIR существует (без git) — сохраняю .env и sites/, заменяю файлы..."
-    BACKUP_DIR=$(mktemp -d)
-    if [ -f "$BASE_DIR/.env" ]; then cp "$BASE_DIR/.env" "$BACKUP_DIR/.env"; fi
-    if [ -d "$BASE_DIR/sites" ]; then cp -a "$BASE_DIR/sites" "$BACKUP_DIR/sites"; fi
-    rm -rf "$BASE_DIR"
-  fi
-  if ! git clone "$REPO_URL" "$BASE_DIR"; then
-    echo "!!! ОШИБКА: не удалось клонировать репозиторий."
-    exit 1
-  fi
-  if [ -n "$BACKUP_DIR" ]; then
-    if [ -f "$BACKUP_DIR/.env" ]; then
-      cp "$BACKUP_DIR/.env" "$BASE_DIR/.env"
-      echo "Файл .env восстановлен (токен сохранён)."
-    fi
-    if [ -d "$BACKUP_DIR/sites" ]; then
-      mkdir -p "$BASE_DIR/sites"
-      cp -a "$BACKUP_DIR/sites/." "$BASE_DIR/sites/"
-      echo "Папка sites/ восстановлена."
-    fi
-    rm -rf "$BACKUP_DIR"
-  fi
-fi
+echo "=== [5/7] Инфра-файлы из GitHub ==="
+mkdir -p "$BASE_DIR"
 cd "$BASE_DIR"
-echo "Файлы проекта на месте: $(ls -1 | tr '\n' ' ')"
+
+for f in docker-compose.yml Caddyfile .env.example; do
+  if ! curl -fsSL "$REPO_RAW/$f" -o "$f"; then
+    echo ""
+    echo "!!! ОШИБКА: не удалось скачать $f"
+    echo "    из $REPO_RAW"
+    echo "    Возможные причины: репозиторий недоступен/приватный,"
+    echo "    файл не запушен, нет интернета, ветка не main."
+    echo "    Ничего не запущено."
+    exit 1
+  fi
+  echo "  скачан $f"
+done
+
+# Миграция со старых версий: sites -> projects
+if [ -d sites ] && [ ! -d projects ]; then
+  mv sites projects
+  echo "Папка sites/ переименована в projects/"
+fi
 
 echo ""
 echo "=== [6/7] Настройки (.env) ==="
 if [ ! -f .env ]; then
   cp .env.example .env
-  TOKEN=$(openssl rand -hex 32)
-  sed -i "s|^MCP_TOKEN=.*|MCP_TOKEN=$TOKEN|" .env
+  MCP=$(openssl rand -hex 32)
+  DASH=$(openssl rand -hex 32)
+  sed -i "s|^MCP_TOKEN=.*|MCP_TOKEN=$MCP|" .env
+  sed -i "s|^DASH_TOKEN=.*|DASH_TOKEN=$DASH|" .env
   echo "------------------------------------------------"
-  echo "Сгенерирован токен (СОХРАНИ ЕГО — нужен для Notion):"
+  echo "Создан .env. СОХРАНИ токены:"
   echo ""
-  echo "  $TOKEN"
+  echo "  MCP_TOKEN  (для Notion):   $MCP"
+  echo "  DASH_TOKEN (для панели):   $DASH"
   echo ""
-  echo "Он также лежит в файле $BASE_DIR/.env"
+  echo "Они также лежат в файле $BASE_DIR/.env"
   echo "------------------------------------------------"
 else
-  echo ".env уже существует — токен и настройки сохранены."
-  grep -q '^MCP_TOKEN=.' .env || { echo "ОШИБКА: в .env пустой MCP_TOKEN"; exit 1; }
-  grep -q '^DOMAIN=' .env    || echo 'DOMAIN=novate-gpt.space' >> .env
-  grep -q '^SITES_DIR=' .env || echo 'SITES_DIR=./sites' >> .env
+  echo ".env уже существует — токены и настройки сохранены."
+  # Переименование старого ключа, если обновляешься
+  sed -i 's|^SITES_DIR=|PROJECTS_DIR=|' .env
+  grep -q '^DOMAIN=' .env       || echo 'DOMAIN=novate-gpt.space' >> .env
+  grep -q '^PROJECTS_DIR=' .env || echo 'PROJECTS_DIR=./projects' >> .env
+  if ! grep -q '^DASH_TOKEN=.' .env; then
+    if grep -q '^DASH_TOKEN=' .env; then
+      sed -i "s|^DASH_TOKEN=.*|DASH_TOKEN=$(openssl rand -hex 32)|" .env
+    else
+      echo "DASH_TOKEN=$(openssl rand -hex 32)" >> .env
+    fi
+    echo "Добавлен новый ключ DASH_TOKEN (вход в панель) — смотри в .env"
+  fi
 fi
+grep -q '^MCP_TOKEN=.' .env || { echo "ОШИБКА: в .env пустой MCP_TOKEN"; exit 1; }
 
-SITES_DIR=$(grep -E '^SITES_DIR=' .env | cut -d= -f2- | tr -d "\"'")
-SITES_DIR=${SITES_DIR:-./sites}
+PROJECTS_DIR=$(grep -E '^PROJECTS_DIR=' .env | cut -d= -f2- | tr -d "\"'")
+PROJECTS_DIR=${PROJECTS_DIR:-./projects}
 DOMAIN=$(grep -E '^DOMAIN=' .env | cut -d= -f2- | tr -d "\"'")
 DOMAIN=${DOMAIN:-localhost}
 
-# Абсолютный путь папки (для volume в Docker)
-case "$SITES_DIR" in
-  /*) SITES_ABS="$SITES_DIR" ;;
-  *)  SITES_ABS="$PWD/$SITES_DIR" ;;
+case "$PROJECTS_DIR" in
+  /*) PROJECTS_ABS="$PROJECTS_DIR" ;;
+  *)  PROJECTS_ABS="$PWD/$PROJECTS_DIR" ;;
 esac
 
 echo ""
-echo "=== [7/7] Папка данных и запуск ==="
-mkdir -p "$SITES_ABS"
+echo "=== [7/7] Папка проектов, образы и запуск ==="
+mkdir -p "$PROJECTS_ABS"
 
-# Перенос данных из старого named volume (при обновлении со старой версии)
-if [ -z "$(ls -A "$SITES_ABS" 2>/dev/null)" ]; then
+# Перенос данных из старого named volume (самая первая версия)
+if [ -z "$(ls -A "$PROJECTS_ABS" 2>/dev/null)" ]; then
   OLD_VOL=$(docker volume ls -q 2>/dev/null | grep sites_data | head -n1 || true)
   if [ -n "$OLD_VOL" ]; then
-    echo "Найден старый volume '$OLD_VOL' — переношу файлы в $SITES_ABS ..."
-    docker run --rm -v "$OLD_VOL":/from -v "$SITES_ABS":/to alpine sh -c "cp -a /from/. /to/" || true
+    echo "Найден старый volume '$OLD_VOL' — переношу файлы..."
+    docker run --rm -v "$OLD_VOL":/from -v "$PROJECTS_ABS":/to alpine sh -c "cp -a /from/. /to/" || true
   fi
 fi
 
-# Права для пользователя контейнера (uid 1000), иначе MCP не сможет писать
-chown -R 1000:1000 "$SITES_ABS" 2>/dev/null || chmod 777 "$SITES_ABS"
+# Права для пользователя контейнера (uid 1000)
+chown -R 1000:1000 "$PROJECTS_ABS" 2>/dev/null || chmod 777 "$PROJECTS_ABS"
 
-docker compose up -d --build
+# Скачиваем свежие образы, собранные GitHub Actions
+if ! docker compose pull; then
+  echo ""
+  echo "!!! ОШИБКА: не удалось скачать Docker-образ ghcr.io/novate911/novate-mcp"
+  echo "    Проверь две вещи:"
+  echo "    1) GitHub Actions уже собрал образ (вкладка Actions в репозитории — зелёная галочка)"
+  echo "    2) Пакет публичный: GitHub -> Packages -> novate-mcp -> Package settings ->"
+  echo "       Change visibility -> Public"
+  echo "    Либо авторизуйся: docker login ghcr.io -u NoVate911 -p <GITHUB_TOKEN>"
+  echo "    и запусти скрипт ещё раз."
+  exit 1
+fi
+
+docker compose up -d
 
 echo ""
 echo "================================================"
 echo "  УСТАНОВКА ЗАВЕРШЕНА"
 echo "================================================"
-echo "Репозиторий: $REPO_URL"
-echo "Домен:       $DOMAIN"
-echo "Папка:       $SITES_ABS  (только она доступна MCP)"
-echo "Токен:       смотри в $BASE_DIR/.env (MCP_TOKEN)"
+echo "Домен:   $DOMAIN"
+echo "Проекты: $PROJECTS_ABS  (только она доступна MCP)"
 echo ""
-echo "Проверки:"
-echo "  curl -i https://$DOMAIN/mcp/   (ожидается 401 Unauthorized)"
-echo "  https://$DOMAIN/sites/         (файлы в браузере)"
+echo "Панель управления:  https://$DOMAIN/"
+echo "  (вход по DASH_TOKEN из $BASE_DIR/.env)"
+echo "MCP для Notion:     https://$DOMAIN/mcp/"
+echo "  (Bearer Token = MCP_TOKEN из .env)"
+echo "Публичные проекты:  https://$DOMAIN/projects/<имя>/"
 echo ""
-echo "Подключение в Notion:"
-echo "  URL:   https://$DOMAIN/mcp/"
-echo "  Auth:  Bearer Token = MCP_TOKEN из .env"
+echo "Проверка MCP: curl -i https://$DOMAIN/mcp/  (ожидается 401)"
 echo ""
-echo "Обновление до последней версии из GitHub:"
-echo "  bash $BASE_DIR/install.sh"
+echo "Обновление до новой версии (после пуша в GitHub):"
+echo "  cd $BASE_DIR && docker compose pull && docker compose up -d"
 
 if [ -f /var/run/reboot-required ]; then
   echo ""
