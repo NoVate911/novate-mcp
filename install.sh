@@ -1,30 +1,20 @@
 #!/bin/bash
 # ============================================================
-# ПОЛНАЯ УСТАНОВКА MCP-СЕРВЕРА ДЛЯ NOTION AI (Ubuntu 24.04)
+# Установщик MCP-сервера для Notion AI (Ubuntu 24.04)
 #
-# Загрузи этот один файл на сервер и запусти от root:
-#   bash install.sh
+# Файлы проекта (server.py, Dockerfile, docker-compose.yml,
+# Caddyfile, .env.example) НЕ вшиты в этот скрипт — они
+# скачиваются из GitHub-репозитория, чтобы всегда брать
+# последние версии.
 #
-# Скрипт сделает всё сам:
-#   1. Обновит систему (apt update && apt upgrade)
-#   2. Установит Docker (если ещё не установлен)
-#   3. Настроит файрвол UFW (SSH + порты 80/443)
-#   4. Создаст файлы проекта в ~/mcp-server
-#   5. Создаст .env и сгенерирует токен (при первом запуске)
-#   6. Создаст разрешённую папку и перенесёт данные
-#      из старого Docker-volume (если обновляешься со старой версии)
-#   7. Соберёт и запустит контейнеры
-#
-# Повторный запуск безопасен: .env не перезаписывается,
-# а файлы кода (server.py и др.) приводятся к эталонным версиям.
-# Если правил код под себя — не запускай install.sh, а используй:
-#   cd ~/mcp-server && docker compose up -d --build
+# Запуск от root:  bash install.sh
 # ============================================================
 
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
-# Проект всегда живёт здесь, независимо от того, куда загружен скрипт
+# Откуда скачивать проект и куда ставить
+REPO_URL="https://github.com/NoVate911/novate-mcp.git"
 BASE_DIR="${BASE_DIR:-$HOME/mcp-server}"
 
 echo ""
@@ -40,7 +30,8 @@ apt update
 apt upgrade -y
 
 echo ""
-echo "=== [3/7] Установка Docker ==="
+echo "=== [3/7] Docker и git ==="
+apt install -y git curl
 if command -v docker >/dev/null 2>&1; then
   echo "Docker уже установлен — пропускаю."
 else
@@ -62,241 +53,62 @@ ufw allow 443/tcp   # HTTPS
 ufw --force enable
 
 echo ""
-echo "=== [5/7] Файлы проекта в $BASE_DIR ==="
-mkdir -p "$BASE_DIR"
+echo "=== [5/7] Файлы проекта из GitHub ==="
+echo "Репозиторий: $REPO_URL"
+
+# Быстрая проверка доступности репозитория ДО любых изменений
+if ! git ls-remote "$REPO_URL" HEAD >/dev/null 2>&1; then
+  echo ""
+  echo "!!! ОШИБКА: не могу получить доступ к репозиторию:"
+  echo "    $REPO_URL"
+  echo ""
+  echo "    Возможные причины:"
+  echo "    - репозиторий приватный или удалён"
+  echo "    - опечатка в URL"
+  echo "    - на сервере нет доступа в интернет"
+  echo ""
+  echo "    Ничего не изменено, установка остановлена."
+  exit 1
+fi
+
+if [ -d "$BASE_DIR/.git" ]; then
+  # Проект уже клонирован ранее — просто тянем последнюю версию
+  echo "Папка $BASE_DIR уже связана с репозиторием — обновляю (git pull)..."
+  if ! git -C "$BASE_DIR" pull --ff-only; then
+    echo ""
+    echo "!!! ОШИБКА: git pull не удался — в $BASE_DIR есть локальные изменения."
+    echo "    Разберись с ними вручную, либо сохрани .env и sites/,"
+    echo "    удали папку $BASE_DIR и запусти скрипт заново."
+    exit 1
+  fi
+else
+  BACKUP_DIR=""
+  if [ -d "$BASE_DIR" ]; then
+    echo "Папка $BASE_DIR существует (без git) — сохраняю .env и sites/, заменяю файлы..."
+    BACKUP_DIR=$(mktemp -d)
+    if [ -f "$BASE_DIR/.env" ]; then cp "$BASE_DIR/.env" "$BACKUP_DIR/.env"; fi
+    if [ -d "$BASE_DIR/sites" ]; then cp -a "$BASE_DIR/sites" "$BACKUP_DIR/sites"; fi
+    rm -rf "$BASE_DIR"
+  fi
+  if ! git clone "$REPO_URL" "$BASE_DIR"; then
+    echo "!!! ОШИБКА: не удалось клонировать репозиторий."
+    exit 1
+  fi
+  if [ -n "$BACKUP_DIR" ]; then
+    if [ -f "$BACKUP_DIR/.env" ]; then
+      cp "$BACKUP_DIR/.env" "$BASE_DIR/.env"
+      echo "Файл .env восстановлен (токен сохранён)."
+    fi
+    if [ -d "$BACKUP_DIR/sites" ]; then
+      mkdir -p "$BASE_DIR/sites"
+      cp -a "$BACKUP_DIR/sites/." "$BASE_DIR/sites/"
+      echo "Папка sites/ восстановлена."
+    fi
+    rm -rf "$BACKUP_DIR"
+  fi
+fi
 cd "$BASE_DIR"
-
-cat > server.py << 'PYEOF'
-import os
-import subprocess
-from pathlib import Path
-
-from fastmcp import FastMCP
-from fastmcp.server.auth import StaticTokenVerifier
-
-# ============================================================
-# Все настройки приходят из .env (через env_file в docker-compose.yml)
-# ============================================================
-
-# Секретный токен доступа (обязателен, генерируется install.sh)
-MCP_TOKEN = os.environ.get("MCP_TOKEN")
-if not MCP_TOKEN:
-    raise RuntimeError("MCP_TOKEN is not set! Проверь файл .env")
-
-# Папка ВНУТРИ контейнера, в которую смонтирована папка SITES_DIR с хоста.
-# Все инструменты работают только внутри неё. Менять имеет смысл
-# только вместе с путём монтирования в docker-compose.yml.
-DATA_DIR = Path(os.environ.get("MCP_DATA_DIR", "/data")).resolve()
-
-# Публичный домен сервера (используется в описаниях инструментов)
-DOMAIN = os.environ.get("DOMAIN", "").strip()
-SITES_URL = f"https://{DOMAIN}/sites/" if DOMAIN else ""
-
-# Авторизация: только запросы с заголовком "Authorization: Bearer <MCP_TOKEN>"
-auth = StaticTokenVerifier(
-    tokens={MCP_TOKEN: {"client_id": "notion-ai", "scopes": ["read", "write"]}}
-)
-
-mcp = FastMCP(name="VPS Tools", auth=auth)
-
-
-def safe_path(path: str) -> Path:
-    """Разрешаем пути только внутри DATA_DIR (защита от выхода через ../)."""
-    target = (DATA_DIR / path.lstrip("/")).resolve()
-    if target != DATA_DIR and DATA_DIR not in target.parents:
-        raise ValueError(f"Путь '{path}' выходит за пределы разрешённой папки")
-    return target
-
-
-_run_desc = (
-    "Выполнить shell-команду на сервере в изолированном Docker-контейнере.\n\n"
-    f"Рабочая директория строго ограничена разрешённой папкой ({DATA_DIR}).\n"
-)
-if SITES_URL:
-    _run_desc += f"Всё созданное в ней видно в браузере: {SITES_URL}<путь>\n"
-
-
-@mcp.tool(description=_run_desc)
-def run_command(command: str, timeout: int = 120) -> str:
-    """Args:
-        command: Команда для выполнения (например, "mkdir -p coffee").
-        timeout: Лимит времени в секундах (по умолчанию 120, максимум 600).
-    """
-    timeout = min(max(timeout, 1), 600)
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=DATA_DIR,
-            timeout=timeout,
-            capture_output=True,
-            text=True,
-        )
-        output = f"$ {command}\nexit code: {result.returncode}"
-        if result.stdout:
-            output += f"\n\nstdout:\n{result.stdout[-4000:]}"
-        if result.stderr:
-            output += f"\n\nstderr:\n{result.stderr[-4000:]}"
-        return output
-    except subprocess.TimeoutExpired:
-        return f"$ {command}\nКоманда превысила лимит {timeout} секунд"
-
-
-@mcp.tool
-def write_file(path: str, content: str) -> str:
-    """Создать или перезаписать текстовый файл в разрешённой папке сервера.
-
-    Args:
-        path: Путь относительно разрешённой папки (например, "coffee/index.html").
-        content: Полное содержимое файла.
-    """
-    target = safe_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return f"Записано {len(content)} символов в {target}"
-
-
-@mcp.tool
-def read_file(path: str) -> str:
-    """Прочитать текстовый файл из разрешённой папки сервера.
-
-    Args:
-        path: Путь относительно разрешённой папки (например, "coffee/index.html").
-    """
-    target = safe_path(path)
-    if not target.is_file():
-        return f"Файл не найден: {path}"
-    text = target.read_text(encoding="utf-8", errors="replace")
-    if len(text) > 20000:
-        return text[:20000] + "\n... (обрезано)"
-    return text
-
-
-@mcp.tool
-def list_files(path: str = ".") -> str:
-    """Показать список файлов и папок в разрешённой папке сервера.
-
-    Args:
-        path: Подпапка относительно разрешённой папки (по умолчанию — вся она).
-    """
-    target = safe_path(path)
-    if not target.is_dir():
-        return f"Папка не найдена: {path}"
-    lines = []
-    for p in sorted(target.rglob("*")):
-        prefix = "[DIR] " if p.is_dir() else "[FILE] "
-        lines.append(prefix + str(p.relative_to(DATA_DIR)))
-        if len(lines) >= 500:
-            lines.append("... (обрезано)")
-            break
-    return "\n".join(lines) if lines else "(пусто)"
-
-
-if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", port=8000, path="/mcp/")
-PYEOF
-
-cat > Dockerfile << 'DEOF'
-FROM python:3.12-slim
-
-WORKDIR /app
-
-RUN pip install --no-cache-dir fastmcp
-
-# Работаем НЕ от root — отдельный пользователь
-RUN useradd --create-home appuser \
-    && mkdir -p /data \
-    && chown -R appuser:appuser /data
-
-COPY server.py .
-
-USER appuser
-
-EXPOSE 8000
-
-CMD ["python", "server.py"]
-DEOF
-
-cat > docker-compose.yml << 'YMLEOF'
-# Все значения ${...} подставляются из файла .env автоматически
-services:
-  mcp:
-    build: .
-    container_name: fastmcp-server
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      # MCP видит ТОЛЬКО папку SITES_DIR из .env — больше ничего на сервере
-      - ${SITES_DIR:-./sites}:/data
-    networks:
-      - web
-
-  caddy:
-    image: caddy:2
-    container_name: caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      # Домен для Caddyfile берётся из .env
-      - DOMAIN=${DOMAIN:-localhost}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-      - ${SITES_DIR:-./sites}:/srv/sites:ro
-    networks:
-      - web
-    depends_on:
-      - mcp
-
-volumes:
-  caddy_data:
-  caddy_config:
-
-networks:
-  web:
-YMLEOF
-
-cat > Caddyfile << 'CEOF'
-# {$DOMAIN} подставляется из .env (передаётся через docker-compose)
-{$DOMAIN} {
-	# MCP-эндпоинт -> контейнер с FastMCP
-	handle /mcp* {
-		reverse_proxy mcp:8000
-	}
-
-	# Статика: всё, что ИИ создаст в разрешённой папке, видно в браузере
-	handle_path /sites/* {
-		root * /srv/sites
-		file_server browse
-	}
-
-	# Всё остальное — заглушка-проверка
-	handle {
-		respond "MCP server is running. Endpoint: /mcp/" 200
-	}
-}
-CEOF
-
-cat > .env.example << 'EEOF'
-# ============ СЕКРЕТ ============
-# Токен доступа к MCP. Сгенерировать: openssl rand -hex 32
-# (install.sh сделает это автоматически при первом запуске)
-MCP_TOKEN=
-
-# ============ ОСНОВНЫЕ НАСТРОЙКИ ============
-# Домен сервера. Только домен: без https:// и без слэша в конце.
-DOMAIN=novate-gpt.space
-
-# Папка на сервере, к которой получает доступ MCP.
-# Всё внутри неё видно в браузере по адресу https://DOMAIN/sites/...
-# Относительный путь считается от папки mcp-server.
-SITES_DIR=./sites
-EEOF
-
-echo "Файлы проекта записаны."
+echo "Файлы проекта на месте: $(ls -1 | tr '\n' ' ')"
 
 echo ""
 echo "=== [6/7] Настройки (.env) ==="
@@ -351,9 +163,10 @@ echo ""
 echo "================================================"
 echo "  УСТАНОВКА ЗАВЕРШЕНА"
 echo "================================================"
-echo "Домен:  $DOMAIN"
-echo "Папка:  $SITES_ABS  (только она доступна MCP)"
-echo "Токен:  смотри в $BASE_DIR/.env (MCP_TOKEN)"
+echo "Репозиторий: $REPO_URL"
+echo "Домен:       $DOMAIN"
+echo "Папка:       $SITES_ABS  (только она доступна MCP)"
+echo "Токен:       смотри в $BASE_DIR/.env (MCP_TOKEN)"
 echo ""
 echo "Проверки:"
 echo "  curl -i https://$DOMAIN/mcp/   (ожидается 401 Unauthorized)"
@@ -362,9 +175,12 @@ echo ""
 echo "Подключение в Notion:"
 echo "  URL:   https://$DOMAIN/mcp/"
 echo "  Auth:  Bearer Token = MCP_TOKEN из .env"
+echo ""
+echo "Обновление до последней версии из GitHub:"
+echo "  bash $BASE_DIR/install.sh"
 
 if [ -f /var/run/reboot-required ]; then
   echo ""
-echo "ВНИМАНИЕ: система просит перезагрузку (обновилось ядро)."
-echo "Выполни: reboot — после перезагрузки контейнеры поднимутся сами."
+  echo "ВНИМАНИЕ: система просит перезагрузку (обновилось ядро)."
+  echo "Выполни: reboot — после перезагрузки контейнеры поднимутся сами."
 fi
