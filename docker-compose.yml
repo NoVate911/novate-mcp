@@ -1,12 +1,12 @@
-# Код НЕ собирается на сервере — используется готовый образ из GHCR,
-# который собирает GitHub Actions. Обновление: docker compose pull && docker compose up -d
+# Код НЕ собирается на сервере — используются готовые образы из GHCR,
+# которые собирает GitHub Actions. Обновление: docker compose pull && docker compose up -d
+# Один GHCR-пакет (novate-mcp), два тега: mcp-latest и dashboard-latest.
 services:
   mcp:
-    image: ghcr.io/novate911/novate-mcp:latest
+    image: ghcr.io/novate911/novate-mcp:mcp-latest
     container_name: fastmcp-server
     restart: unless-stopped
     env_file: .env
-    command: ["python", "server.py"]
     volumes:
       # MCP видит ТОЛЬКО папку PROJECTS_DIR из .env — больше ничего на сервере
       - ${PROJECTS_DIR:-./projects}:/data
@@ -16,15 +16,14 @@ services:
       - web
 
   dashboard:
-    image: ghcr.io/novate911/novate-mcp:latest
+    image: ghcr.io/novate911/novate-mcp:dashboard-latest
     container_name: mcp-dashboard
     restart: unless-stopped
     env_file: .env
-    command: ["python", "dashboard.py"]
     volumes:
       # Панель работает с проектами в режиме только-чтение
       - ${PROJECTS_DIR:-./projects}:/data:ro
-      # А вот свои настройки (overrides.json) панель может писать
+      # Свои настройки (overrides.json) панель может писать
       - ./dashboard-data:/config
     networks:
       - web

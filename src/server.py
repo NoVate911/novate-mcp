@@ -28,7 +28,7 @@ PROJECTS_URL = "https://" + DOMAIN + "/projects/" if DOMAIN else ""
 
 # Авторизация: только запросы с заголовком "Authorization: Bearer <MCP_TOKEN>"
 auth = StaticTokenVerifier(
-    tokens={MCP_TOKEN: {"client_id": "notion-ai", "scopes": ["read", "write"]}}
+    tokens={MCP_TOKEN: {"client_id": "mcp-client", "scopes": ["read", "write"]}}
 )
 
 mcp = FastMCP(name="VPS Tools", auth=auth)

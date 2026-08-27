@@ -1,4 +1,4 @@
-name: Build and push Docker image
+name: Build and push Docker images
 
 on:
   push:
@@ -12,6 +12,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { target: mcp, tag: mcp-latest }
+          - { target: dashboard, tag: dashboard-latest }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,11 +28,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push (${{ matrix.target }})
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: ${{ matrix.target }}
           push: true
-          tags: |
-            ghcr.io/novate911/novate-mcp:latest
-            ghcr.io/novate911/novate-mcp:sha-${{ github.sha }}
+          tags: ghcr.io/novate911/novate-mcp:${{ matrix.tag }}

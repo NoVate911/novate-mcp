@@ -1,10 +1,11 @@
 #!/bin/bash
 # ============================================================
-# Установщик NoVate MCP — MCP-сервера для Notion AI (Ubuntu 24.04)
+# Установщик NoVate MCP (Ubuntu 24.04)
+# MCP-сервер + веб-панель управления проектами.
 #
 # Код проекта НЕ копируется на сервер: GitHub Actions собирает
-# Docker-образ и кладёт его в GHCR (ghcr.io/novate911/novate-mcp).
-# Сервер скачивает готовый образ через docker compose pull.
+# Docker-образы и кладёт их в GHCR (ghcr.io/novate911/novate-mcp).
+# Сервер скачивает готовые образы через docker compose pull.
 # Этот скрипт забирает из репозитория только 3 инфра-файла:
 # docker-compose.yml, Caddyfile, .env.example
 #
@@ -87,8 +88,8 @@ if [ ! -f .env ]; then
   echo "------------------------------------------------"
   echo "Создан .env. СОХРАНИ токены:"
   echo ""
-  echo "  MCP_TOKEN  (для Notion):   $MCP"
-  echo "  DASH_TOKEN (для панели):   $DASH"
+  echo "  MCP_TOKEN  (для MCP-клиента):  $MCP"
+  echo "  DASH_TOKEN (для панели):       $DASH"
   echo ""
   echo "Они также лежат в файле $BASE_DIR/.env"
   echo "------------------------------------------------"
@@ -133,16 +134,16 @@ if [ -z "$(ls -A "$PROJECTS_ABS" 2>/dev/null)" ]; then
   fi
 fi
 
-# Права для пользователя контейнера (uid 1000)
+# Права для пользователя контейнеров (uid 1000)
 chown -R 1000:1000 "$PROJECTS_ABS" 2>/dev/null || chmod 777 "$PROJECTS_ABS"
 chown -R 1000:1000 "$BASE_DIR/dashboard-data" 2>/dev/null || chmod 777 "$BASE_DIR/dashboard-data"
 
 # Скачиваем свежие образы, собранные GitHub Actions
 if ! docker compose pull; then
   echo ""
-  echo "!!! ОШИБКА: не удалось скачать Docker-образ ghcr.io/novate911/novate-mcp"
+  echo "!!! ОШИБКА: не удалось скачать образы ghcr.io/novate911/novate-mcp"
   echo "    Проверь две вещи:"
-  echo "    1) GitHub Actions уже собрал образ (вкладка Actions в репозитории — зелёная галочка)"
+  echo "    1) GitHub Actions уже собрал образы (вкладка Actions в репозитории — зелёная галочка)"
   echo "    2) Пакет публичный: GitHub -> Packages -> novate-mcp -> Package settings ->"
   echo "       Change visibility -> Public"
   echo "    Либо авторизуйся: docker login ghcr.io -u NoVate911 -p <GITHUB_TOKEN>"
@@ -161,8 +162,8 @@ echo "Проекты: $PROJECTS_ABS  (только она доступна MCP)"
 echo ""
 echo "Панель управления:  https://$DOMAIN/"
 echo "  (вход по DASH_TOKEN из $BASE_DIR/.env)"
-echo "MCP для Notion:     https://$DOMAIN/mcp/"
-echo "  (Bearer Token = MCP_TOKEN из .env)"
+echo "MCP-эндпоинт:       https://$DOMAIN/mcp/"
+echo "  (Bearer Token = MCP_TOKEN из .env — вставь в свой MCP-клиент)"
 echo "Публичные проекты:  https://$DOMAIN/projects/<имя>/"
 echo ""
 echo "Проверка MCP: curl -i https://$DOMAIN/mcp/  (ожидается 401)"

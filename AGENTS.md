@@ -5,55 +5,64 @@
 
 ## Обзор проекта
 
-**NoVate MCP** — кастомный MCP-сервер, к которому Notion AI подключается
-по HTTPS и получает инструменты для работы с VPS: `run_command`,
-`write_file`, `read_file`, `list_files`. Плюс веб-панель «NoVate MCP»
-для просмотра и скачивания проектов.
+**NoVate MCP** — кастомный MCP-сервер: MCP-клиенты (ИИ-агенты)
+подключаются по HTTPS и получают инструменты для работы с VPS:
+`run_command`, `write_file`, `read_file`, `list_files`.
+Плюс веб-панель «NoVate MCP» для просмотра и скачивания проектов.
 
 Три Docker-контейнера (docker-compose.yml):
 
-- `mcp` — FastMCP-сервер (`src/server.py`), внутренний порт 8000.
+- `mcp` — FastMCP-сервер (`src/server.py`, Python), внутренний порт 8000.
   Наружу не торчит; Caddy проксирует на него только путь `/mcp/`.
-- `dashboard` — FastAPI-панель (`src/dashboard.py`), внутренний порт 8001.
-  Отвечает на всё, что не `/mcp/` и не `/projects/`.
+- `dashboard` — панель на **Bun + TypeScript** (`src/dashboard/`),
+  внутренний порт 8001. Отвечает на всё, что не `/mcp/` и не `/projects/`.
 - `caddy` — единственная публичная точка (80/443), авто-HTTPS.
 
-Код на сервер НЕ копируется: GitHub Actions собирает образ в
-`ghcr.io/novate911/novate-mcp`, сервер делает `docker compose pull`.
+Код на сервер НЕ копируется: GitHub Actions собирает ДВА образа
+из одного multi-stage Dockerfile (target: `mcp` / `dashboard`) в один
+GHCR-пакет `ghcr.io/novate911/novate-mcp` с тегами `mcp-latest` и
+`dashboard-latest`. Сервер делает `docker compose pull`.
 
 ## Структура репозитория
 
 - `src/server.py` — MCP-сервер: инструменты, Bearer-авторизация, `safe_path`.
-- `src/dashboard.py` — панель: логин, проекты, файлы, скачивание, настройки.
-- `src/settings.py` — единый источник настроек: переопределения панели
-  (`/config/overrides.json`) > переменные окружения из `.env` > DEFAULTS.
-- `Dockerfile` — один образ для обоих сервисов (команда выбирается в compose).
+- `src/settings.py` — настройки для MCP (Python): overrides.json > .env > дефолты.
+- `src/dashboard/index.ts` — панель: роутер, auth, страницы (Bun.serve, без фреймворков).
+- `src/dashboard/settings.ts` — TS-порт логики настроек. Держи в синхроне со settings.py!
+- `src/dashboard/ui.ts` — дизайн-система: CSS-константа, каркасы страниц, helpers.
+- `src/dashboard/client.ts` — клиентский JS; при сборке образа компилируется
+  `bun build --minify` в `public/client.js`.
+- `Dockerfile` — multi-stage: stage `mcp` (python:3.12-slim) и
+  stage `dashboard` (oven/bun:1).
 - `docker-compose.yml`, `Caddyfile`, `.env.example` — инфра-файлы, их
   install.sh скачивает на сервер из ветки main (raw.githubusercontent.com).
 - `install.sh` — единственный файл, который загружается на сервер вручную.
-- `.github/workflows/build.yml` — сборка и пуш образа в GHCR при пуше в main.
+- `.github/workflows/build.yml` — matrix-сборка обоих образов в GHCR.
 
 ## Setup commands
 
-Локальная разработка (Python 3.12+):
+Python-часть (Python 3.12+):
 
 ```bash
-pip install fastmcp "fastapi" "uvicorn[standard]"
-
-# MCP-сервер локально (stdio не нужен, но нужен токен)
+pip install fastmcp
 MCP_TOKEN=dev-token python src/server.py          # http://127.0.0.1:8000/mcp/
-
-# Панель локально (нужны токен и существующая папка данных)
-MCP_DATA_DIR=/tmp/projects DASH_TOKEN=dev CONFIG_DIR=/tmp/cfg \
-  python src/dashboard.py                          # http://127.0.0.1:8001
-mkdir -p /tmp/projects /tmp/cfg                    # если папок нет
 ```
 
-Сборка образа локально (без GitHub Actions):
+Панель (нужен Bun 1.x):
 
 ```bash
-docker build -t novate-mcp:dev .
-docker run --rm -e MCP_TOKEN=dev -p 8000:8000 novate-mcp:dev
+mkdir -p /tmp/projects /tmp/cfg
+cd src/dashboard
+bun build ./client.ts --outdir ./public           # собрать клиентский JS
+MCP_DATA_DIR=/tmp/projects DASH_TOKEN=dev CONFIG_DIR=/tmp/cfg bun run index.ts
+# http://127.0.0.1:8001
+```
+
+Сборка образов локально:
+
+```bash
+docker build --target mcp -t novate-mcp:mcp .
+docker build --target dashboard -t novate-mcp:dashboard .
 ```
 
 ## Testing instructions
@@ -65,14 +74,17 @@ docker run --rm -e MCP_TOKEN=dev -p 8000:8000 novate-mcp:dev
 # Синтаксис bash-установщика
 bash -n install.sh
 
-# Компиляция всего Python-кода
-python3 -m py_compile src/server.py src/dashboard.py src/settings.py
+# Компиляция Python-кода
+python3 -m py_compile src/server.py src/settings.py
+
+# Проверка TS (если установлен bun) — сборка без запуска
+cd src/dashboard && bun build ./index.ts --outdir /tmp/dashcheck --target bun && cd -
 
 # Валидность YAML
 python3 -c "import yaml; yaml.safe_load(open('docker-compose.yml'))"
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/build.yml'))"
 
-# Логика приоритетов настроек (env -> panel override -> reset)
+# Логика приоритетов настроек (Python-сторона)
 CONFIG_DIR=/tmp/cfg DASH_TOKEN=env-token python3 - <<'EOF'
 import sys; sys.path.insert(0, "src")
 import settings
@@ -87,40 +99,46 @@ EOF
 
 ## Code style
 
-- Python 3.12, комментарии и докстринги — на русском (проект русскоязычный).
-- В `dashboard.py` HTML/CSS хранятся в обычных строковых константах
-  (PAGE, CSS), подстановка — через токены вида `@TITLE@` и
-  `str.replace(...)`, либо конкатенация. НЕ используй f-strings,
-  содержащие литеральные фигурные скобки CSS — это источник багов.
-- UI панели: тёмная тема (#0f1117 фон, #7c8aff акцент), русские подписи,
-  выделение текста запрещено (user-select: none), кроме input/textarea.
-- Бренд: «NoVate MCP» (не «NoVate Panel» и т.п.).
+- Комментарии и UI-строки — на русском (проект русскоязычный).
+- Бренд: «NoVate MCP». НЕ упоминай конкретных MCP-клиентов в коде и
+  документации — проект клиент-нейтральный.
+- Python: docstring инструмента = инструкция для LLM, пиши понятно,
+  с примерами путей.
+- TypeScript: строгая типизация, без `any`; сервер — только встроенные
+  API Bun и node:* (без npm-зависимостей!); HTML собирай template
+  literals; весь CSS — в константе CSS в ui.ts.
+- UI панели: минимализм, тёмная тема, акцент #1ED895 (переменная
+  --accent), анимации только на CSS transform/opacity (GPU-дёшево),
+  выделение текста запрещено (user-select: none), кроме input/textarea,
+  уважай prefers-reduced-motion.
+- Клиентский JS — только через src/dashboard/client.ts (собирается при
+  сборке образа). Никаких inline-<script> с логикой в ui.ts.
 
 ## Как добавить новый MCP-инструмент
 
-1. Функция в `src/server.py` с декоратором `@mcp.tool`, docstring на
-   русском — его читает LLM, пиши понятно и с примерами путей.
+1. Функция в `src/server.py` с декоратором `@mcp.tool`.
 2. Все файловые пути — ТОЛЬКО через `safe_path()` (защита от `../`).
-3. Прогони проверки из раздела Testing.
+3. Прогони проверки из Testing.
 4. Пуш в main -> Actions -> на сервере `docker compose pull && up -d`.
 
 ## Как добавить новую настройку
 
-Нужно трогать четыре места, иначе получится рассинхрон:
+Нужно трогать ПЯТЬ мест, иначе рассинхрон:
 
 1. `.env.example` — новый ключ с комментарием.
 2. `src/settings.py` — DEFAULTS.
-3. `src/dashboard.py` — список EDITABLE (или INFO_ONLY, если в панели
-   настройка только для чтения).
-4. `README.md` — таблица настроек.
+3. `src/dashboard/settings.ts` — DEFAULTS (дублирует Python-сторону!).
+4. `src/dashboard/index.ts` — список EDITABLE (или INFO_ONLY).
+5. `README.md` — таблица настроек.
 
 ## Security considerations
 
 - `.env`, `projects/`, `dashboard-data/` — НИКОГДА не коммитить
   (уже в .gitignore; при добавлении новых секретов дополняй .gitignore).
-- `safe_path()` обязателен для любых путей от пользователя/LLM.
-- Панель: сравнение токенов только через `hmac.compare_digest`,
-  cookie — подписанная HMAC, httponly + secure + samesite.
+- `safe_path()` / `safePath()` обязательны для любых путей от клиента.
+- Панель: токены сравниваются через sha256 + timingSafeEqual (не
+  сравнивай токены напрямую — утекает длина), cookie — HMAC-подписанная,
+  HttpOnly + Secure + SameSite=Lax, security-заголовки на HTML-ответах.
 - Контейнеры работают не от root (uid 1000). Панель монтирует проекты
   read-only; писать в /config может только панель, mcp читает ro.
 - `run_command` выполняет произвольный shell внутри контейнера — это
@@ -129,8 +147,8 @@ EOF
 
 ## Deployment
 
-- Деплой = пуш в main -> GitHub Actions -> GHCR -> на сервере
-  `cd ~/mcp-server && docker compose pull && docker compose up -d`.
+- Деплой = пуш в main -> GitHub Actions (matrix: mcp + dashboard) ->
+  GHCR -> на сервере `cd ~/mcp-server && docker compose pull && docker compose up -d`.
 - Первая установка на чистый сервер: только `install.sh` (он ставит
   Docker, UFW, качает инфра-файлы из main, генерирует токены).
 - GHCR-пакет должен быть public, иначе `docker compose pull` на сервере
@@ -139,15 +157,21 @@ EOF
 ## PR instructions
 
 - Коммиты на русском или английском, коротко и по делу
-  (напр. "dashboard: добавил страницу настроек").
+  (напр. "dashboard: переписал панель на Bun + TS").
 - Перед пушем — все проверки из Testing instructions зелёные.
 - Изменил поведение/настройки — обнови README.md и этот файл.
 
 ## Частые ловушки
 
-- В описаниях инструментов не хардкодь домен — бери из `settings.get("DOMAIN")`.
-- Путь MCP-эндпоинта — ровно `/mcp/` (слеш важен, Notion подключается на него).
-- Папка данных на хосте должна принадлежать uid 1000, иначе контейнер
-  не сможет писать (install.sh делает chown, учитывай это в новых папках).
+- settings.py и settings.ts — ДВЕ реализации одной логики; меняя одну,
+  меняй и вторую.
+- Путь MCP-эндпоинта — ровно `/mcp/` (слеш важен).
+- Папки данных на хосте должны принадлежать uid 1000 (панель — user
+  `bun`, mcp — user `appuser`, оба uid 1000).
 - Caddyfile использует {$DOMAIN} — переменная приезжает из .env через
   compose environment; без неё Caddy не стартует.
+- Изменил client.ts — пересборка образа обязательна (bun build идёт в
+  Dockerfile), локальный `bun run` без `bun build` отдаст заглушку
+  вместо client.js.
+- GHCR-теги сервисов: `mcp-latest` / `dashboard-latest` — не перепутай
+  в docker-compose.yml.
