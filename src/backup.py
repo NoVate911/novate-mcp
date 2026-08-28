@@ -33,8 +33,10 @@ DATA_DIR = Path(os.environ.get("MCP_DATA_DIR", "/data"))
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
 
-# Панель создаёт этот файл кнопкой «Сделать бэкап сейчас»
+# Панель создаёт этот файл кнопкой «Сделать бэкап сейчас»,
+# а MCP-инструмент make_backup — файл .backup-now в папке проектов
 TRIGGER_FILE = CONFIG_DIR / "backup-now"
+MCP_TRIGGER_FILE = DATA_DIR / ".backup-now"
 # Панель пишет сюда ИМЯ архива кнопкой «Восстановить»
 RESTORE_FILE = CONFIG_DIR / "restore-now"
 # Статус последнего бэкапа для страницы «Бэкапы» в панели
@@ -329,11 +331,15 @@ def last_run_time() -> float:
 
 
 def trigger_mtime() -> float:
-    """mtime файла-триггера бэкапа от панели (0 — триггера нет)."""
-    try:
-        return TRIGGER_FILE.stat().st_mtime
-    except OSError:
-        return 0.0
+    """mtime самого свежего файла-триггера бэкапа — от панели или от
+    MCP-инструмента make_backup (0 — триггеров нет)."""
+    mtimes = []
+    for f in (TRIGGER_FILE, MCP_TRIGGER_FILE):
+        try:
+            mtimes.append(f.stat().st_mtime)
+        except OSError:
+            pass
+    return max(mtimes, default=0.0)
 
 
 def restore_request():

@@ -8,7 +8,8 @@
 **NoVate MCP** — кастомный MCP-сервер: MCP-клиенты (ИИ-агенты)
 подключаются по HTTPS и получают инструменты для работы с VPS:
 `run_command`, `write_file`, `read_file`, `list_files`,
-`search_in_files`, `delete_file`, `move_file`.
+`search_in_files`, `delete_file`, `move_file`, `server_stats`,
+`run_background`/`poll_task`, `make_backup`.
 Плюс веб-панель «NoVate MCP» для просмотра и скачивания проектов
 (вход через Telegram OpenID Connect) и фоновый сервис бэкапов,
 который архивирует проекты и отправляет архив в Telegram.
@@ -276,6 +277,12 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   выполняются. Имя валидируется регэкспом и там, и там.
 - Шифрование бэкапов — через openssl CLI, он уже есть в python:3.12-slim,
   ничего доустанавливать в образ не надо.
+- Фоновые задачи (run_background/poll_task): логи в /tmp/mcp-tasks контейнера
+  mcp — эфемерны (перезапуск чистит) и нарочно вне /data, чтобы не попадать
+  на публичный /projects/ и в бэкапы.
+- make_backup пишет триггер /data/.backup-now; backup следит за ОБОИМИ
+  триггерами (/config/backup-now от панели и этот). /config для mcp остаётся
+  read-only — иначе MCP мог бы переписать overrides.json (эскалация в панель).
 - Время внутри контейнеров: TZ из .env + /etc/localtime (смонтирован ro).
   Помни: `docker compose restart` НЕ перечитывает .env — нужен `up -d`.
 - Проверить, что значение из .env реально доехало до контейнера:
