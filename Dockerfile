@@ -1,5 +1,5 @@
-# Два образа из одного Dockerfile (target = сервис).
-# GitHub Actions собирает оба (matrix), на сервере — только pull.
+# Три образа из одного Dockerfile (target = сервис).
+# GitHub Actions собирает все (matrix), на сервере — только pull.
 
 # ===== MCP-сервер (Python + FastMCP) =====
 FROM python:3.12-slim AS mcp
@@ -31,11 +31,28 @@ COPY src/dashboard/ ./
 
 # Клиентский JS: TS -> минифицированный бандл (единственный build-шаг)
 RUN bun build ./client.ts --outdir ./public --minify \
-    && mkdir -p /data /config \
-    && chown -R bun:bun /data /config
+    && mkdir -p /data /config /backups \
+    && chown -R bun:bun /data /config /backups
 
 USER bun
 
 EXPOSE 8001
 
 CMD ["bun", "index.ts"]
+
+
+# ===== Сервис бэкапов (Python, только stdlib) =====
+FROM python:3.12-slim AS backup
+
+WORKDIR /app
+
+# Работаем НЕ от root — отдельный пользователь
+RUN useradd --create-home appuser \
+    && mkdir -p /data /config /backups \
+    && chown -R appuser:appuser /data /config /backups
+
+COPY src/backup.py src/settings.py ./
+
+USER appuser
+
+CMD ["python", "backup.py"]

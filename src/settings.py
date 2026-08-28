@@ -1,4 +1,4 @@
-"""Общий модуль настроек для MCP-сервера и панели.
+"""Общий модуль настроек для MCP-сервера, панели и сервиса бэкапов.
 
 Приоритет значений:
   1. Переопределение из панели (файл overrides.json в /config) — если задано
@@ -17,7 +17,14 @@ DEFAULTS = {
     "DOMAIN": "",
     "PROJECTS_DIR": "./projects",
     "MCP_TOKEN": "",
-    "DASH_TOKEN": "",
+    "SESSION_SECRET": "",
+    "TG_CLIENT_ID": "",
+    "TG_CLIENT_SECRET": "",
+    "ALLOWED_TG_USERS": "",
+    "TG_BOT_TOKEN": "",
+    "TG_CHAT_ID": "",
+    "BACKUP_INTERVAL_HOURS": "24",
+    "BACKUP_KEEP": "7",
 }
 
 

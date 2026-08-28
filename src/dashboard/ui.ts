@@ -84,6 +84,7 @@ h1 a { color: inherit; text-decoration: none; }
 }
 .nav a:hover { color: var(--text); }
 .nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+.nav .user { margin-left: 24px; font-size: 14px; color: var(--muted); }
 
 /* ---- анимации появления ---- */
 @keyframes rise {
@@ -193,26 +194,26 @@ form.inline input { flex: 1; min-width: 180px; }
   0%, 100% { transform: scale(1); opacity: .10; }
   50%      { transform: scale(1.18); opacity: .18; }
 }
-form.login {
+.login-card {
   position: relative; width: min(380px, 92vw);
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 20px; padding: 38px 34px;
   box-shadow: 0 30px 70px -24px rgba(0, 0, 0, .7);
   animation: rise .6s cubic-bezier(.2, .7, .3, 1) both;
+  text-align: center;
 }
-form.login h1 { margin-bottom: 8px; }
-form.login p { color: var(--muted); font-size: 14px; margin-bottom: 24px; line-height: 1.6; }
-form.login input { width: 100%; margin-bottom: 14px; }
-form.login button {
-  width: 100%; background: var(--accent); color: #05231a; border: 0;
+.login-card h1 { margin-bottom: 8px; }
+.login-card p { color: var(--muted); font-size: 14px; margin-bottom: 24px; line-height: 1.6; }
+.login-btn {
+  display: block; width: 100%; background: var(--accent); color: #05231a;
   border-radius: 10px; padding: 13px; font-size: 15px; font-weight: 700;
-  cursor: pointer; transition: filter .2s ease, transform .2s ease;
+  text-decoration: none; transition: filter .2s ease, transform .2s ease;
 }
-form.login button:hover { filter: brightness(1.12); transform: translateY(-1px); }
+.login-btn:hover { filter: brightness(1.12); transform: translateY(-1px); text-decoration: none; }
 .err {
   background: rgba(255, 90, 110, .1); border: 1px solid rgba(255, 90, 110, .35);
   color: #ff9aa8; border-radius: 10px; padding: 11px 15px;
-  font-size: 14px; margin-bottom: 16px;
+  font-size: 14px; margin-bottom: 16px; text-align: left;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -234,25 +235,28 @@ export function shell(title: string, content: string): string {
 }
 
 /** Липкая шапка с навигацией. */
-export function header(active: string): string {
+export function header(active: string, user = ""): string {
   const cls = (name: string) => (name === active ? ` class="active"` : "");
+  const who = user ? `<span class="user">👤 ${esc(user)}</span>` : "";
   return `<div class="topbar"><div class="topbar-inner">`
     + `<h1><a href="/">NoVate <span>MCP</span></a></h1>`
     + `<nav class="nav">`
     + `<a${cls("projects")} href="/">Проекты</a>`
+    + `<a${cls("backups")} href="/backups">Бэкапы</a>`
     + `<a${cls("settings")} href="/settings">Настройки</a>`
+    + who
     + `<a href="/logout">Выйти</a>`
     + `</nav></div></div>`;
 }
 
-/** Страница входа. */
-export function loginPage(withError: boolean): string {
-  const err = withError ? `<div class="err">Неверный токен. Попробуйте ещё раз.</div>` : "";
+/** Страница входа (только через Telegram OIDC). */
+export function loginPage(error: string | null): string {
+  const err = error ? `<div class="err">${esc(error)}</div>` : "";
   return shell("NoVate MCP — вход", `<div class="login-wrap"><div class="glow"></div>`
-    + `<form class="login" method="post" action="/login">`
+    + `<div class="login-card">`
     + `<h1>NoVate <span>MCP</span></h1>`
-    + `<p>Панель управления проектами.<br>Введите токен доступа (DASH_TOKEN).</p>`
+    + `<p>Панель управления проектами.<br>Вход — через Telegram<br>для пользователей из списка разрешённых.</p>`
     + err
-    + `<input type="password" name="token" placeholder="Токен доступа" autofocus required>`
-    + `<button type="submit">Войти</button></form></div>`);
+    + `<a class="login-btn" href="/auth/telegram">Войти через Telegram</a>`
+    + `</div></div>`);
 }

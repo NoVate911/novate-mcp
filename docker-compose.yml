@@ -1,6 +1,6 @@
 # Код НЕ собирается на сервере — используются готовые образы из GHCR,
 # которые собирает GitHub Actions. Обновление: docker compose pull && docker compose up -d
-# Один GHCR-пакет (novate-mcp), два тега: mcp-latest и dashboard-latest.
+# Один GHCR-пакет (novate-mcp), три тега: mcp-latest, dashboard-latest, backup-latest.
 services:
   mcp:
     image: ghcr.io/novate911/novate-mcp:mcp-latest
@@ -25,6 +25,23 @@ services:
       - ${PROJECTS_DIR:-./projects}:/data:ro
       # Свои настройки (overrides.json) панель может писать
       - ./dashboard-data:/config
+      # Архивы бэкапов — только чтение (пишет их сервис backup)
+      - ./backups:/backups:ro
+    networks:
+      - web
+
+  backup:
+    image: ghcr.io/novate911/novate-mcp:backup-latest
+    container_name: novate-backup
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Проекты — только чтение, из них собирается архив
+      - ${PROJECTS_DIR:-./projects}:/data:ro
+      # Настройки панели (overrides.json) + файл-триггер «бэкап сейчас»
+      - ./dashboard-data:/config:ro
+      # Сюда сервис пишет архивы и last-backup.json
+      - ./backups:/backups
     networks:
       - web
 

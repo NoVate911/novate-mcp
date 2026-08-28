@@ -1,5 +1,6 @@
 /**
  * Настройки панели (TypeScript-порт логики src/settings.py).
+ * Держи в синхроне со settings.py!
  *
  * Приоритет значений:
  *   1. Переопределение из панели (/config/overrides.json) — если задано
@@ -15,7 +16,14 @@ export const DEFAULTS: Record<string, string> = {
   DOMAIN: "",
   PROJECTS_DIR: "./projects",
   MCP_TOKEN: "",
-  DASH_TOKEN: "",
+  SESSION_SECRET: "",
+  TG_CLIENT_ID: "",
+  TG_CLIENT_SECRET: "",
+  ALLOWED_TG_USERS: "",
+  TG_BOT_TOKEN: "",
+  TG_CHAT_ID: "",
+  BACKUP_INTERVAL_HOURS: "24",
+  BACKUP_KEEP: "7",
 };
 
 export function readOverrides(): Record<string, string> {

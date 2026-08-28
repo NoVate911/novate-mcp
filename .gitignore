@@ -3,6 +3,7 @@
 projects/
 sites/
 dashboard-data/
+backups/
 
 # Python-мусор
 __pycache__/
