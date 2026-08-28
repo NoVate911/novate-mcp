@@ -76,8 +76,7 @@ MCP_DATA_DIR=/tmp/projects CONFIG_DIR=/tmp/cfg BACKUP_DIR=/tmp/backups \
 
 ```bash
 MCP_DATA_DIR=/tmp/projects CONFIG_DIR=/tmp/cfg BACKUP_DIR=/tmp/backups \
-  TG_BOT_TOKEN=123:abc TG_CHAT_ID=111222333 \
-  python src/backup.py
+  TG_BOT_TOKEN=... TG_CHAT_ID=... python src/backup.py
 ```
 
 Сборка образов локально:
@@ -156,6 +155,54 @@ EOF
 4. `src/dashboard/index.ts` — список EDITABLE (или INFO_ONLY).
 5. `README.md` — таблица настроек.
 
+Исключение: чисто инфра-переменные окружения, которые читает рантайм,
+а не код (пример — `TZ`): только `.env.example` и README.
+
+## Telegram OIDC: устройство и отладка
+
+Вход в панель — manual Authorization Code Flow против oauth.telegram.org.
+Эндпоинты (сверены с /.well-known/openid-configuration):
+`/auth` → редирект с `code` → POST `/token` (Basic auth + PKCE) →
+`id_token` (JWT), подпись проверяется по JWKS.
+
+Креды и URL настраиваются в **мини-приложении @BotFather** (кнопка «Open»
+в чате с ним, НЕ текстовые команды): выбрать бота → **Bot Settings →
+Web Login**. Там выдаются Client ID + Client Secret (парой!) и там же
+**Allowed URLs**: нужно добавить ОБА адреса — origin `https://DOMAIN`
+и callback `https://DOMAIN/auth/callback`. Client Secret — это НЕ токен
+бота (токен бота Telegram в роли client secret отклоняет).
+
+Коды ошибок панели (`/login?err=...`) и их причины:
+
+- `state` — state-cookie просрочена (TTL 10 мин) или не сошлась.
+  Лечится просто повторным входом со страницы /login.
+- `exchange` — не удался обмен кода на токен. Точная причина — в логах
+  (`docker compose logs dashboard`): **Telegram отвечает HTTP 200 даже на
+  ошибки**, тело вида `{"error":"..."}`:
+  - `invalid_client` — неверная пара Client ID/Client Secret: секрет не
+    из раздела Web Login, перевыпущен, или застрявший OIDC-конфиг бота
+    (известный баг BotFather, tdlib/telegram-bot-api#836 — лечится
+    созданием НОВОГО бота и переносом Web Login на него).
+  - `invalid_grant` — код просрочен или уже использован (код одноразовый:
+    нельзя обновлять страницу /auth/callback?code=...), реже — расхождение
+    PKCE или redirect_uri.
+- `verify` — id_token не прошёл проверку (подпись/iss/aud/exp) — деталь
+  в логах.
+- `denied` — Telegram ID не в ALLOWED_TG_USERS; сам ID написан в логах
+  панели — так и наполняется список разрешённых.
+
+Технические особенности реализации (важно при правках auth-кода):
+
+- Token-эндпоинт: проверять поле `error` в JSON, а НЕ HTTP-статус (см. выше).
+- `aud` и `sub` в id_token могут приходить ЧИСЛАМИ (Client ID числовой) —
+  приводить к строке перед сравнением с TG_CLIENT_ID / ALLOWED_TG_USERS.
+- base64url собирается вручную из base64 (replace `+/=`) — не полагаться
+  на `digest("base64url")` / `toString("base64url")` рантайма.
+- JWKS кэшируются в памяти на 1 час; если kid из JWT не найден и ключ
+  в наборе один — берётся он.
+- Сессия — HMAC-подписанная cookie (SESSION_SECRET): uid + name + ts.
+  Allowlist ALLOWED_TG_USERS проверяется на КАЖДЫЙ запрос.
+
 ## Security considerations
 
 - `.env`, `projects/`, `dashboard-data/`, `backups/` — НИКОГДА не коммитить
@@ -187,6 +234,9 @@ EOF
   папки projects/, dashboard-data/, backups/).
 - GHCR-пакет должен быть public, иначе `docker compose pull` на сервере
   упадёт с 401 — это самая частая проблема.
+- Изменения в .env применяются ТОЛЬКО пересозданием контейнера:
+  `docker compose up -d` (compose сам увидит изменение env_file).
+  `docker compose restart` НЕ перечитывает .env!
 - После обновления образа dashboard всем пользователям может понадобиться
   перелогиниться только если менялся SESSION_SECRET — иначе сессии живут.
 
@@ -208,13 +258,18 @@ EOF
 - Caddyfile использует {$DOMAIN} — переменная приезжает из .env через
   compose environment; без неё Caddy не стартует.
 - Вход в панель: DASH_TOKEN больше НЕТ. Нужны TG_CLIENT_ID/TG_CLIENT_SECRET
-  (OIDC-приложение из @BotFather) и ALLOWED_TG_USERS; callback
-  `https://DOMAIN/auth/callback` должен быть добавлен в доверенные
-  источники бота у @BotFather, иначе Telegram не примет redirect_uri.
-- ID пользователей, которым отказано во входе, панель пишет в лог
-  (`docker compose logs dashboard`) — так удобно наполнять ALLOWED_TG_USERS.
+  из мини-приложения @BotFather (Web Login) и ALLOWED_TG_USERS; Allowed URLs
+  у бота должны содержать и origin, и /auth/callback — иначе Telegram не
+  примет redirect_uri (подробности в разделе «Telegram OIDC»).
 - Кнопка «Сделать бэкап сейчас» в панели создаёт файл /config/backup-now —
   сервис backup следит за его mtime, не удаляй эту связку.
+- Время внутри контейнеров: TZ из .env + /etc/localtime (смонтирован ro).
+  Помни: `docker compose restart` НЕ перечитывает .env — нужен `up -d`.
+- Проверить, что значение из .env реально доехало до контейнера:
+  `grep '^KEY=' .env | cut -d= -f2- | tr -d '\n' | sha256sum` и
+  `docker compose exec <service> sh -c 'printf %s "$KEY"' | sha256sum` —
+  хэши должны совпасть (без `tr -d` хэш от файла будет с переводом строки
+  и НЕ совпадёт — это не признак проблемы).
 - Изменил client.ts — пересборка образа обязательна (bun build идёт в
   Dockerfile), локальный `bun run` без `bun build` отдаст заглушку
   вместо client.js.
