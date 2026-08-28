@@ -90,10 +90,12 @@ GitHub Actions собирает **три образа** из одного Docker
 
 1. В **@BotFather** создай бота (или возьми существующего) — его **токен**
    пригодится для бэкапов (`TG_BOT_TOKEN`).
-2. Там же создай OIDC-приложение — получишь **Client ID** и **Client Secret**
-   (`TG_CLIENT_ID` / `TG_CLIENT_SECRET`).
-3. В настройках бота добавь доверенный источник (trusted origin):
-   `https://ДОМЕН` — callback входа будет `https://ДОМЕН/auth/callback`.
+2. Настройки OIDC живут в **мини-приложении BotFather** (кнопка «Open» в чате
+   с BotFather, не текстовые команды): выбери бота → **Bot Settings → Web Login**.
+   Там показаны **Client ID** и **Client Secret** (`TG_CLIENT_ID` / `TG_CLIENT_SECRET`)
+   — бери их именно оттуда; Client Secret — это НЕ токен бота.
+3. В разделе Web Login добавь в **Allowed URLs** оба адреса:
+   `https://ДОМЕН` и `https://ДОМЕН/auth/callback`.
 4. Нажми Start в диалоге с ботом — иначе он не сможет прислать тебе бэкап в личку.
 5. Узнай свой Telegram ID у **@userinfobot** — впишешь его в `ALLOWED_TG_USERS`.
 
