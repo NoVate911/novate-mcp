@@ -180,7 +180,10 @@ async function jwks(): Promise<Jwk[]> {
 async function verifyIdToken(jwt: string): Promise<Record<string, unknown> | null> {
   try {
     const parts = jwt.split(".");
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) {
+      console.error("id_token: ожидалось 3 части JWT");
+      return null;
+    }
     const head = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")) as {
       alg?: string; kid?: string;
     };
@@ -188,8 +191,12 @@ async function verifyIdToken(jwt: string): Promise<Record<string, unknown> | nul
       Buffer.from(parts[1], "base64url").toString("utf8"),
     ) as Record<string, unknown>;
     const keys = await jwks();
-    const jwk = keys.find((k) => k.kid === head.kid);
-    if (!jwk) return null;
+    const jwk = keys.find((k) => k.kid === head.kid)
+      || (keys.length === 1 ? keys[0] : undefined);
+    if (!jwk) {
+      console.error(`id_token: ключ kid=${head.kid} не найден в JWKS (${keys.length} шт.)`);
+      return null;
+    }
     const key = createPublicKey({ format: "jwk", key: jwk as JsonWebKey });
     const signed = Buffer.from(`${parts[0]}.${parts[1]}`, "utf8");
     const signature = Buffer.from(parts[2], "base64url");
@@ -201,16 +208,33 @@ async function verifyIdToken(jwt: string): Promise<Record<string, unknown> | nul
     } else if (head.alg === "EdDSA") {
       ok = cryptoVerify(null, signed, key, signature);
     } else {
+      console.error(`id_token: неподдержанный alg=${head.alg}`);
       return null;
     }
-    if (!ok) return null;
-    if (payload.iss !== TG_ISSUER) return null;
+    if (!ok) {
+      console.error("id_token: подпись не прошла проверку");
+      return null;
+    }
+    if (payload.iss !== TG_ISSUER) {
+      console.error(`id_token: iss=${String(payload.iss)} — ожидался ${TG_ISSUER}`);
+      return null;
+    }
     const cid = settings.get("TG_CLIENT_ID");
     const aud = payload.aud;
-    if (aud !== cid && !(Array.isArray(aud) && aud.includes(cid))) return null;
-    if (typeof payload.exp !== "number" || payload.exp * 1000 <= Date.now()) return null;
+    // aud (и sub) Telegram может прислать числом, а не строкой — приводим к строке
+    const audOk = String(aud) === cid
+      || (Array.isArray(aud) && aud.map(String).includes(cid));
+    if (!audOk) {
+      console.error(`id_token: aud=${JSON.stringify(aud)} не совпал с TG_CLIENT_ID (${cid})`);
+      return null;
+    }
+    if (typeof payload.exp !== "number" || payload.exp * 1000 <= Date.now()) {
+      console.error("id_token: токен истёк (exp)");
+      return null;
+    }
     return payload;
-  } catch {
+  } catch (err) {
+    console.error("id_token: исключение при проверке:", err);
     return null;
   }
 }
@@ -235,7 +259,8 @@ async function exchangeCode(code: string, verifier: string): Promise<Record<stri
       }),
     });
     if (!res.ok) {
-      console.error(`Telegram token endpoint: HTTP ${res.status}`);
+      const text = await res.text();
+      console.error(`Telegram token endpoint: HTTP ${res.status} — ${text.slice(0, 300)}`);
       return null;
     }
     return (await res.json()) as Record<string, unknown>;
@@ -570,9 +595,13 @@ async function route(req: Request): Promise<Response> {
         ? "Этот Telegram-аккаунт не в списке разрешённых (ALLOWED_TG_USERS)."
         : err === "state"
           ? "Сессия входа устарела. Попробуйте ещё раз."
-          : err === "token"
-            ? "Telegram не подтвердил вход. Попробуйте ещё раз."
-            : null;
+          : err === "exchange"
+            ? "Не удалось обменять код на токен. Подробности — в логах: docker compose logs dashboard"
+            : err === "verify"
+              ? "Telegram прислал некорректный id_token. Подробности — в логах: docker compose logs dashboard"
+              : err === "token"
+                ? "Telegram не подтвердил вход. Попробуйте ещё раз."
+                : null;
     return html(loginPage(msg), err ? 403 : 200);
   }
 
@@ -601,25 +630,36 @@ async function route(req: Request): Promise<Response> {
     const code = url.searchParams.get("code") || "";
     const state = url.searchParams.get("state") || "";
     if (!saved || saved.state !== state || !code) {
+      console.error(`OIDC callback: state не сошёлся (cookie=${saved ? "ok" : "нет"}, code=${code ? "есть" : "нет"})`);
       return redirect("/login?err=state", { "Set-Cookie": clearState });
     }
     const tokens = await exchangeCode(code, String(saved.verifier));
-    const claims = tokens && typeof tokens.id_token === "string"
-      ? await verifyIdToken(tokens.id_token)
-      : null;
-    if (!claims || typeof claims.sub !== "string") {
-      return redirect("/login?err=token", { "Set-Cookie": clearState });
+    if (!tokens || typeof tokens.id_token !== "string") {
+      console.error("OIDC callback: обмен кода на токен не удался (деталь выше)");
+      return redirect("/login?err=exchange", { "Set-Cookie": clearState });
     }
-    if (!allowedUsers().has(claims.sub)) {
-      console.log(`Отказано во входе: Telegram ID ${claims.sub} не в ALLOWED_TG_USERS`);
+    const claims = await verifyIdToken(tokens.id_token);
+    if (!claims) {
+      console.error("OIDC callback: id_token не прошёл проверку (деталь выше)");
+      return redirect("/login?err=verify", { "Set-Cookie": clearState });
+    }
+    // sub может прийти числом — приводим к строке
+    const sub = typeof claims.sub === "string" ? claims.sub
+      : typeof claims.sub === "number" ? String(claims.sub) : null;
+    if (!sub) {
+      console.error(`OIDC callback: нет sub в claims (${Object.keys(claims).join(",")})`);
+      return redirect("/login?err=verify", { "Set-Cookie": clearState });
+    }
+    if (!allowedUsers().has(sub)) {
+      console.log(`Отказано во входе: Telegram ID ${sub} не в ALLOWED_TG_USERS`);
       return redirect("/login?err=denied", { "Set-Cookie": clearState });
     }
     const name = typeof claims.name === "string" && claims.name
       ? claims.name
       : typeof claims.preferred_username === "string" && claims.preferred_username
         ? "@" + claims.preferred_username
-        : `ID ${claims.sub}`;
-    const session = packSigned({ uid: claims.sub, name, ts: Math.floor(Date.now() / 1000) });
+        : `ID ${sub}`;
+    const session = packSigned({ uid: sub, name, ts: Math.floor(Date.now() / 1000) });
     return redirectCookies("/", [
       clearState,
       cookieStr(COOKIE_NAME, session, COOKIE_TTL),
