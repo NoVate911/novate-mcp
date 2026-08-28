@@ -8,6 +8,7 @@
  *   GET  /download/<путь>   — скачивание файла (нужен вход)
  *   GET  /backups           — бэкапы: статус, архивы, запуск вручную (нужен вход)
  *   POST /backup-now        — запустить бэкап вне расписания (нужен вход)
+ *   POST /restore           — восстановить проекты из архива (нужен вход)
  *   GET  /backup-file/<имя> — скачивание архива бэкапа (нужен вход)
  *   GET  /settings          — настройки (нужен вход)
  *   POST /settings          — сохранить/сбросить переопределение (нужен вход)
@@ -72,6 +73,10 @@ const EDITABLE = [
   { key: "BACKUP_KEEP", label: "Локальных копий бэкапов",
     hint: "Столько последних архивов хранится в папке backups на сервере, старые удаляются.",
     secret: false },
+  { key: "BACKUP_PASSWORD", label: "Пароль шифрования бэкапов (AES-256)",
+    hint: "Если задан — архивы шифруются (файлы .enc). Применяется в течение минуты. "
+      + "Расшифровка скачанного: openssl enc -d -aes-256-cbc -pbkdf2 -in файл.enc -out файл.tar.gz",
+    secret: true },
 ];
 
 // Только для просмотра
@@ -153,6 +158,20 @@ function sessionOf(req: Request): Session | null {
   if (!data || typeof data.uid !== "string") return null;
   if (!allowedUsers().has(data.uid)) return null;
   return { uid: data.uid, name: typeof data.name === "string" ? data.name : "" };
+}
+
+// ---------- уведомления в Telegram ----------
+
+/** Неблокирующее уведомление в Telegram (бот для бэкапов). Ошибки — только в лог. */
+function tgNotify(text: string): void {
+  const token = settings.get("TG_BOT_TOKEN");
+  const chatId = settings.get("TG_CHAT_ID");
+  if (!token || !chatId) return;
+  fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  }).catch((err) => console.error("tgNotify failed:", err));
 }
 
 // ---------- Telegram OIDC ----------
@@ -444,6 +463,7 @@ function browsePage(rel: string, user: string): Response {
 type BackupStatus = {
   time?: string; file?: string; size?: number; files?: number;
   telegram?: string; reason?: string; error?: string;
+  restore?: string; encrypted?: boolean;
 };
 
 function backupStatus(): BackupStatus | null {
@@ -458,6 +478,19 @@ function backupsPage(url: URL, user: string): string {
   let flash = "";
   if (url.searchParams.has("started")) {
     flash = `<div class="note ok rise">Бэкап запущен — архив появится в списке и прилетит в Telegram в течение минуты.</div>`;
+  } else if (url.searchParams.has("restore")) {
+    flash = `<div class="note ok rise">Восстановление запущено — перед ним автоматически делается страховочный бэкап. Статус появится ниже в течение минуты.</div>`;
+  }
+  const confirmName = url.searchParams.get("confirm") || "";
+  if (confirmName && /^[\w.-]+\.tar\.gz(\.enc)?$/.test(confirmName)) {
+    flash += `<div class="note rise" style="border-left-color:#ff5a6e">`
+      + `<b>Восстановить проекты из архива ${esc(confirmName)}?</b><br>`
+      + `Текущее содержимое проектов будет перезаписано. Перед этим автоматически `
+      + `создаётся страховочный бэкап. Настройки панели (overrides.json) не восстанавливаются.`
+      + `<form method="post" action="/restore" style="margin-top:12px">`
+      + `<input type="hidden" name="file" value="${esc(confirmName)}">`
+      + `<button class="btn" type="submit">Да, восстановить</button> `
+      + `<a class="btn gray" href="/backups">Отмена</a></form></div>`;
   }
 
   const st = backupStatus();
@@ -479,8 +512,10 @@ function backupsPage(url: URL, user: string): string {
     const nextStr = Number.isFinite(next)
       ? `<div class="hint">Следующий по расписанию: ${esc(fmtTime(next))} · интервал ${esc(String(intervalH))} ч</div>`
       : "";
+    const enc = st.encrypted ? " · 🔐 зашифрован" : "";
+    const rst = st.restore ? `<div class="hint">Восстановление: ${esc(st.restore)}</div>` : "";
     statusHtml = `<div class="note rise">Последний бэкап: <b>${esc(st.file || "—")}</b>`
-      + ` · ${humanSize(st.size || 0)} · ${esc(fmtTime(Date.parse(st.time)))}${tg}${nextStr}</div>`;
+      + ` · ${humanSize(st.size || 0)} · ${esc(fmtTime(Date.parse(st.time)))}${enc}${tg}${nextStr}${rst}</div>`;
   } else {
     statusHtml = `<div class="note rise">Бэкапов ещё не было. Первый создаётся автоматически `
       + `после запуска сервиса, дальше — по расписанию (BACKUP_INTERVAL_HOURS) или кнопкой ниже.</div>`;
@@ -489,7 +524,7 @@ function backupsPage(url: URL, user: string): string {
   let rows = "";
   try {
     rows = readdirSync(BACKUP_DIR)
-      .filter((f) => f.endsWith(".tar.gz"))
+      .filter((f) => f.endsWith(".tar.gz") || f.endsWith(".tar.gz.enc"))
       .map((f) => {
         let size = 0, mtime = 0;
         try {
@@ -501,7 +536,8 @@ function backupsPage(url: URL, user: string): string {
       .sort((a, b) => b.mtime - a.mtime)
       .map((f) =>
         `<tr><td>🗄 ${esc(f.name)}</td><td>${humanSize(f.size)}</td><td>${esc(fmtTime(f.mtime))}</td>`
-        + `<td><a class="btn" href="/backup-file/${encodeURIComponent(f.name)}">Скачать</a></td></tr>`,
+        + `<td><a class="btn" href="/backup-file/${encodeURIComponent(f.name)}">Скачать</a> `
+        + `<a class="btn gray" href="/backups?confirm=${encodeURIComponent(f.name)}">Восстановить</a></td></tr>`,
       )
       .join("");
     if (!rows) rows = `<tr><td colspan="4" style="text-align:center;color:var(--muted)">архивов пока нет</td></tr>`;
@@ -518,7 +554,9 @@ function backupsPage(url: URL, user: string): string {
     + `<tbody>${rows}</tbody></table></div>`
     + `<div class="hint" style="margin-top:16px">В архив входят проекты и настройки панели. `
     + `Локально хранятся последние BACKUP_KEEP копий (папка backups на сервере), `
-    + `каждый архив отправляется в Telegram (TG_BOT_TOKEN → TG_CHAT_ID).</div></div>`);
+    + `каждый архив отправляется в Telegram (TG_BOT_TOKEN → TG_CHAT_ID). `
+    + `Если задан BACKUP_PASSWORD — архивы шифруются (AES-256, файлы .enc). `
+    + `«Восстановить» перезаписывает проекты из выбранного архива.</div></div>`);
 }
 
 function settingsPage(url: URL, user: string): string {
@@ -661,6 +699,7 @@ async function route(req: Request): Promise<Response> {
     }
     if (!allowedUsers().has(sub)) {
       console.log(`Отказано во входе: Telegram ID ${sub} не в ALLOWED_TG_USERS`);
+      tgNotify("⛔ Отклонена попытка входа в панель NoVate MCP: Telegram ID " + sub);
       return redirect("/login?err=denied", { "Set-Cookie": clearState });
     }
     const name = typeof claims.name === "string" && claims.name
@@ -669,6 +708,7 @@ async function route(req: Request): Promise<Response> {
         ? "@" + claims.preferred_username
         : `ID ${sub}`;
     const session = packSigned({ uid: sub, name, ts: Math.floor(Date.now() / 1000) });
+    tgNotify("🔑 Вход в панель NoVate MCP: " + name + " (ID " + sub + ")");
     return redirectCookies("/", [
       clearState,
       cookieStr(COOKIE_NAME, session, COOKIE_TTL),
@@ -723,11 +763,27 @@ async function route(req: Request): Promise<Response> {
     return redirect("/backups?started=1");
   }
 
+  if (method === "POST" && path === "/restore") {
+    // Запрос на восстановление: файл-триггер с ИМЕНЕМ архива для сервиса backup
+    const form = await req.formData();
+    const file = String(form.get("file") || "");
+    if (!/^[\w.-]+\.tar\.gz(\.enc)?$/.test(file)) return redirect("/backups");
+    try {
+      if (!statSync(resolve(BACKUP_DIR, file)).isFile()) return redirect("/backups");
+      writeFileSync(`${CONFIG_DIR}/restore-now`, file, "utf8");
+      tgNotify("♻️ Запрошено восстановление проектов из архива " + file
+        + " (пользователь " + session.name + ")");
+    } catch (err) {
+      console.error("Не удалось создать триггер восстановления:", err);
+    }
+    return redirect("/backups?restore=1");
+  }
+
   if (method === "GET" && path.startsWith("/backup-file/")) {
     let name = "";
     try { name = decodeURIComponent(path.slice("/backup-file/".length)); } catch { return redirect("/backups"); }
     // Только плоское имя архива — никаких путей
-    if (!/^[\w.-]+\.tar\.gz$/.test(name)) return redirect("/backups");
+    if (!/^[\w.-]+\.tar\.gz(\.enc)?$/.test(name)) return redirect("/backups");
     const target = resolve(BACKUP_DIR, name);
     if (!target.startsWith(BACKUP_DIR + "/")) return redirect("/backups");
     try {
@@ -737,7 +793,7 @@ async function route(req: Request): Promise<Response> {
     }
     return new Response(Bun.file(target), {
       headers: {
-        "Content-Type": "application/gzip",
+        "Content-Type": name.endsWith(".enc") ? "application/octet-stream" : "application/gzip",
         "Content-Disposition": `attachment; filename="${name}"`,
       },
     });
@@ -752,10 +808,14 @@ async function route(req: Request): Promise<Response> {
     if (!EDITABLE.some((e) => e.key === key)) return redirect("/settings");
     if (action === "reset") {
       settings.clearOverride(key);
+      tgNotify("⚙️ Настройка " + key + " сброшена к .env (пользователь " + session.name + ")");
       return redirect("/settings?reset=1");
     }
     const value = String(form.get("value") || "").trim();
-    if (value) settings.setOverride(key, value);
+    if (value) {
+      settings.setOverride(key, value);
+      tgNotify("⚙️ Настройка " + key + " изменена из панели (пользователь " + session.name + ")");
+    }
     return redirect("/settings?saved=1");
   }
 

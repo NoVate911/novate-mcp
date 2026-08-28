@@ -7,7 +7,8 @@
 
 **NoVate MCP** — кастомный MCP-сервер: MCP-клиенты (ИИ-агенты)
 подключаются по HTTPS и получают инструменты для работы с VPS:
-`run_command`, `write_file`, `read_file`, `list_files`.
+`run_command`, `write_file`, `read_file`, `list_files`,
+`search_in_files`, `delete_file`, `move_file`.
 Плюс веб-панель «NoVate MCP» для просмотра и скачивания проектов
 (вход через Telegram OpenID Connect) и фоновый сервис бэкапов,
 который архивирует проекты и отправляет архив в Telegram.
@@ -18,9 +19,11 @@
   Наружу не торчит; Caddy проксирует на него только путь `/mcp/`.
 - `dashboard` — панель на **Bun + TypeScript** (`src/dashboard/`),
   внутренний порт 8001. Отвечает на всё, что не `/mcp/` и не `/projects/`.
-- `backup` — сервис бэкапов (`src/backup.py`, Python stdlib): по расписанию
-  или по файлу-триггеру от панели собирает tar.gz в `/backups` и шлёт
-  его в Telegram через Bot API. Сетевых портов нет.
+- `backup` — сервис бэкапов (`src/backup.py`, Python stdlib + openssl CLI):
+  по расписанию или по файлу-триггеру от панели собирает tar.gz в `/backups`,
+  шлёт в Telegram через Bot API, при BACKUP_PASSWORD шифрует (AES-256, .enc)
+  и по запросу панели восстанавливает проекты из архива (перед этим делает
+  страховочный бэкап). Сетевых портов нет.
 - `caddy` — единственная публичная точка (80/443), авто-HTTPS.
 
 Код на сервер НЕ копируется: GitHub Actions собирает ТРИ образа
@@ -33,8 +36,8 @@
 - `src/server.py` — MCP-сервер: инструменты, Bearer-авторизация, `safe_path`.
 - `src/settings.py` — настройки (Python): overrides.json > .env > дефолты.
   Используется и mcp, и backup.
-- `src/backup.py` — сервис бэкапов: расписание/триггер, tar.gz, Telegram
-  Bot API (sendDocument/sendMessage), статус в last-backup.json.
+- `src/backup.py` — сервис бэкапов: расписание/триггер, tar.gz, AES-256
+  (openssl CLI), восстановление, Telegram Bot API, статус в last-backup.json.
 - `src/dashboard/index.ts` — панель: роутер, вход через Telegram OIDC
   (state + PKCE, проверка id_token по JWKS), страницы (Bun.serve, без фреймворков).
 - `src/dashboard/settings.ts` — TS-порт логики настроек. Держи в синхроне со settings.py!
@@ -218,8 +221,13 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
 - Бэкапы содержат overrides.json — там могут лежать переопределённые
   секреты. Чат TG_CHAT_ID и папка backups/ = хранилища секретов.
 - Контейнеры работают не от root (uid 1000). Панель монтирует проекты
-  read-only; backup монтирует проекты и /config read-only, пишет только
-  в /backups; писать в /config может только панель, mcp читает ro.
+  read-only; backup монтирует проекты в rw (нужно для восстановления —
+  запускается только из авторизованной панели, перед восстановлением
+  делается страховочный бэкап), /config read-only, пишет в /backups;
+  писать в /config может только панель, mcp читает ro.
+- Панель и backup шлют алерты в Telegram (TG_BOT_TOKEN → TG_CHAT_ID):
+  входы, отклонённые попытки, смена настроек (только имя ключа, без
+  значения), восстановления, сбои бэкапов.
 - `run_command` выполняет произвольный shell внутри контейнера — это
   осознанная мощь инструмента; не выноси его за пределы контейнера.
 - Порты наружу: только 80/443 (Caddy). 8000/8001 не публиковать,
@@ -263,6 +271,11 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   примет redirect_uri (подробности в разделе «Telegram OIDC»).
 - Кнопка «Сделать бэкап сейчас» в панели создаёт файл /config/backup-now —
   сервис backup следит за его mtime, не удаляй эту связку.
+- Восстановление — через /config/restore-now: панель пишет туда ИМЯ архива,
+  backup следит за парой (имя, mtime); старые триггеры при рестарте не
+  выполняются. Имя валидируется регэкспом и там, и там.
+- Шифрование бэкапов — через openssl CLI, он уже есть в python:3.12-slim,
+  ничего доустанавливать в образ не надо.
 - Время внутри контейнеров: TZ из .env + /etc/localtime (смонтирован ro).
   Помни: `docker compose restart` НЕ перечитывает .env — нужен `up -d`.
 - Проверить, что значение из .env реально доехало до контейнера:

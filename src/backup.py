@@ -3,8 +3,13 @@
 Что делает:
   - раз в BACKUP_INTERVAL_HOURS часов (и по кнопке «Сделать бэкап сейчас»
     в панели) собирает tar.gz-архив проектов и настроек панели;
+  - если задан BACKUP_PASSWORD — шифрует архив (AES-256 через openssl):
+    в хранилище и в Telegram уходит файл .enc;
   - хранит BACKUP_KEEP последних архивов локально в /backups;
   - отправляет архив в Telegram: бот TG_BOT_TOKEN -> чат TG_CHAT_ID;
+  - по запросу из панели восстанавливает проекты из выбранного архива
+    (перед восстановлением автоматически делает страховочный бэкап);
+  - при ошибках бэкапа/восстановления шлёт уведомление в Telegram;
   - пишет статус последнего бэкапа в /backups/last-backup.json
     (его показывает панель на странице «Бэкапы»).
 
@@ -14,6 +19,8 @@
 
 import json
 import os
+import re
+import subprocess
 import tarfile
 import time
 import urllib.request
@@ -28,6 +35,8 @@ BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
 
 # Панель создаёт этот файл кнопкой «Сделать бэкап сейчас»
 TRIGGER_FILE = CONFIG_DIR / "backup-now"
+# Панель пишет сюда ИМЯ архива кнопкой «Восстановить»
+RESTORE_FILE = CONFIG_DIR / "restore-now"
 # Статус последнего бэкапа для страницы «Бэкапы» в панели
 STATE_FILE = BACKUP_DIR / "last-backup.json"
 
@@ -35,6 +44,9 @@ STATE_FILE = BACKUP_DIR / "last-backup.json"
 MAX_TG_BYTES = 45 * 1024 * 1024
 # Пауза между проверками «пора ли делать бэкап»
 CHECK_EVERY = 60
+
+# Допустимое имя архива: плоское, без путей и подкаталогов
+ARCHIVE_RE = re.compile(r"^[\w.-]+\.tar\.gz(\.enc)?$")
 
 
 def log(msg: str) -> None:
@@ -68,11 +80,20 @@ def count_project_files() -> int:
     return total
 
 
-def make_archive() -> Path:
-    """tar.gz: проекты (/data) + настройки панели (overrides.json)."""
+def make_archive(tag: str = "") -> Path:
+    """tar.gz: проекты (/data) + настройки панели (overrides.json).
+
+    tag — метка в имени (например, страховочный снапшот "-pre-restore"),
+    чтобы снапшот не перезаписал сам исходный архив при совпадении секунды.
+    """
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = BACKUP_DIR / f"novate-backup-{stamp}.tar.gz"
+    while True:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = BACKUP_DIR / f"novate-backup-{stamp}{tag}.tar.gz"
+        # Имя должно быть свободно и в открытом, и в зашифрованном виде
+        if not out.exists() and not Path(str(out) + ".enc").exists():
+            break
+        time.sleep(1.1)
     with tarfile.open(out, "w:gz") as tar:
         if DATA_DIR.is_dir():
             tar.add(DATA_DIR, arcname="projects")
@@ -82,10 +103,44 @@ def make_archive() -> Path:
     return out
 
 
+def encrypt_archive(archive: Path, password: str) -> Path:
+    """AES-256-CBC через openssl CLI; незашифрованный оригинал удаляется."""
+    out = archive.with_name(archive.name + ".enc")
+    subprocess.run(
+        ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-salt",
+         "-pass", "pass:" + password, "-in", str(archive), "-out", str(out)],
+        check=True, capture_output=True,
+    )
+    archive.unlink()
+    return out
+
+
+def decrypt_archive(src: Path, password: str, out: Path) -> None:
+    """Расшифровка .enc обратно в tar.gz (openssl CLI)."""
+    subprocess.run(
+        ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2",
+         "-pass", "pass:" + password, "-in", str(src), "-out", str(out)],
+        check=True, capture_output=True,
+    )
+
+
+def maybe_encrypt(archive: Path):
+    """Если задан BACKUP_PASSWORD — шифруем. Возвращает (путь, зашифрован_ли)."""
+    password = settings.get("BACKUP_PASSWORD")
+    if not password:
+        return archive, False
+    try:
+        return encrypt_archive(archive, password), True
+    except Exception as e:
+        # openssl недоступен или упал — бэкап не теряем, шлём открытым
+        log(f"ВНИМАНИЕ: шифрование не удалось ({e}), архив оставлен открытым")
+        return archive, False
+
+
 def prune() -> None:
     """Удаляет старые архивы, оставляя BACKUP_KEEP самых свежих."""
     archives = sorted(
-        BACKUP_DIR.glob("novate-backup-*.tar.gz"),
+        (p for p in BACKUP_DIR.glob("novate-backup-*") if p.is_file()),
         key=lambda p: p.stat().st_mtime,
     )
     for old in archives[:-keep_count()]:
@@ -113,7 +168,7 @@ def tg_api(token: str, method: str, fields: dict,
             f"--{boundary}\r\n"
             f'Content-Disposition: form-data; name="{file_field}"; '
             f'filename="{file_path.name}"\r\n'
-            f"Content-Type: application/gzip\r\n\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\n"
         ).encode()
         body += file_path.read_bytes()
         body += f"\r\n--{boundary}--\r\n".encode()
@@ -129,6 +184,18 @@ def tg_api(token: str, method: str, fields: dict,
         )
     with urllib.request.urlopen(req, timeout=300) as resp:
         return json.loads(resp.read())
+
+
+def tg_text(text: str) -> None:
+    """Текстовое уведомление в Telegram (алерты). Ошибки — только в лог."""
+    token = settings.get("TG_BOT_TOKEN")
+    chat_id = settings.get("TG_CHAT_ID")
+    if not token or not chat_id:
+        return
+    try:
+        tg_api(token, "sendMessage", {"chat_id": chat_id, "text": text})
+    except Exception as e:
+        log(f"не удалось отправить уведомление: {e}")
 
 
 def send_to_telegram(archive: Path, caption: str) -> str:
@@ -171,8 +238,9 @@ def run_backup(reason: str) -> None:
     log(f"старт бэкапа ({reason})")
     try:
         archive = make_archive()
-        size = archive.stat().st_size
         files = count_project_files()
+        archive, encrypted = maybe_encrypt(archive)
+        size = archive.stat().st_size
         prune()
         caption = (
             "🗄 Бэкап NoVate MCP\n"
@@ -180,19 +248,75 @@ def run_backup(reason: str) -> None:
             f"📁 Файлов в проектах: {files}\n"
             f"💾 Размер: {size / 1048576:.2f} МБ"
         )
+        if encrypted:
+            caption += ("\n🔐 Зашифрован AES-256 (BACKUP_PASSWORD). Расшифровка: "
+                        "openssl enc -d -aes-256-cbc -pbkdf2 -in <файл> -out backup.tar.gz")
         tg = send_to_telegram(archive, caption)
-        log(f"готово: {archive.name} ({size} байт), telegram={tg}")
+        log(f"готово: {archive.name} ({size} байт), telegram={tg}, encrypted={encrypted}")
         write_status({
             "time": datetime.now(timezone.utc).isoformat(),
             "file": archive.name, "size": size, "files": files,
-            "telegram": tg, "reason": reason,
+            "telegram": tg, "reason": reason, "encrypted": encrypted,
         })
     except Exception as e:
         log(f"ОШИБКА: {e}")
+        tg_text(f"⚠️ NoVate MCP: бэкап не удался ({reason}): {e}")
         write_status({
             "time": datetime.now(timezone.utc).isoformat(),
             "error": str(e), "reason": reason,
         })
+
+
+def do_restore(name: str) -> None:
+    """Восстановить проекты из архива (кнопка «Восстановить» в панели).
+
+    Перед перезаписью проектов автоматически делается страховочный бэкап.
+    Настройки панели (dashboard-data) из архива НЕ восстанавливаются.
+    """
+    if not ARCHIVE_RE.match(name):
+        raise ValueError(f"недопустимое имя архива: {name!r}")
+    src = BACKUP_DIR / name
+    if not src.is_file():
+        raise FileNotFoundError(name)
+    log(f"восстановление из {name}")
+    snapshot, _ = maybe_encrypt(make_archive(tag="-pre-restore"))
+    log(f"страховочный бэкап перед восстановлением: {snapshot.name}")
+    prune()
+
+    work = src
+    tmp = None
+    if src.name.endswith(".enc"):
+        password = settings.get("BACKUP_PASSWORD")
+        if not password:
+            raise RuntimeError("архив зашифрован, а BACKUP_PASSWORD не задан")
+        tmp = BACKUP_DIR / (src.name + ".dec.tmp")
+        decrypt_archive(src, password, tmp)
+        work = tmp
+    try:
+        restored = 0
+        with tarfile.open(work, "r:gz") as tar:
+            for member in tar.getmembers():
+                # Восстанавливаем только содержимое projects/
+                if not member.name.startswith("projects/"):
+                    continue
+                rel = member.name[len("projects/"):]
+                if not rel:
+                    continue
+                member.name = rel
+                tar.extract(member, DATA_DIR, filter="data")
+                restored += 1
+        log(f"восстановлено объектов: {restored}")
+        tg_text(f"♻️ NoVate MCP: проекты восстановлены из архива {name}\n"
+                f"Страховочная копия состояния до восстановления: {snapshot.name}")
+        write_status({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "restore": f"ok: {name} (объектов: {restored})",
+            "file": snapshot.name, "size": snapshot.stat().st_size,
+            "reason": "страховочный перед восстановлением",
+        })
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def last_run_time() -> float:
@@ -205,11 +329,24 @@ def last_run_time() -> float:
 
 
 def trigger_mtime() -> float:
-    """mtime файла-триггера от панели (0 — триггера нет)."""
+    """mtime файла-триггера бэкапа от панели (0 — триггера нет)."""
     try:
         return TRIGGER_FILE.stat().st_mtime
     except OSError:
         return 0.0
+
+
+def restore_request():
+    """Запрос на восстановление от панели: (имя архива, mtime) или None."""
+    try:
+        st = RESTORE_FILE.stat()
+    except OSError:
+        return None
+    try:
+        name = RESTORE_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        name = ""
+    return (name, st.st_mtime)
 
 
 def main() -> None:
@@ -217,10 +354,26 @@ def main() -> None:
     # Перезапуск контейнера не должен порождать лишний бэкап —
     # время последнего запуска восстанавливаем из state-файла.
     last_run = last_run_time()
-    # Старый trigger-файл (созданный до рестарта) — не новая команда.
+    # Старые файлы-триггеры (созданные до рестарта) — не новые команды.
     last_trigger = trigger_mtime()
+    last_restore = restore_request()
     while True:
         try:
+            req = restore_request()
+            if req is not None and req != last_restore:
+                last_restore = req
+                if req[0]:
+                    try:
+                        do_restore(req[0])
+                    except Exception as e:
+                        log(f"ОШИБКА восстановления: {e}")
+                        tg_text(f"⚠️ NoVate MCP: восстановление из {req[0]} "
+                                f"не удалось: {e}")
+                        write_status({
+                            "time": datetime.now(timezone.utc).isoformat(),
+                            "restore": f"error: {e}",
+                        })
+                    last_run = time.time()
             trig = trigger_mtime()
             if trig > last_trigger:
                 last_trigger = trig

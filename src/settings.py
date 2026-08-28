@@ -25,6 +25,7 @@ DEFAULTS = {
     "TG_CHAT_ID": "",
     "BACKUP_INTERVAL_HOURS": "24",
     "BACKUP_KEEP": "7",
+    "BACKUP_PASSWORD": "",
 }
 
 

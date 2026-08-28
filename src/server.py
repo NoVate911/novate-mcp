@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -124,6 +125,82 @@ def list_files(path: str = ".") -> str:
             lines.append("... (обрезано)")
             break
     return "\n".join(lines) if lines else "(пусто)"
+
+
+@mcp.tool
+def search_in_files(query: str, path: str = ".", max_results: int = 50) -> str:
+    """Искать текст в содержимом файлов проектов (как grep, без регулярных выражений).
+
+    Args:
+        query: Строка для поиска (обычный текст, регистр учитывается).
+        path: Подпапка для поиска относительно папки проектов
+              (например, "landing"; по умолчанию — все проекты).
+        max_results: Максимум совпадений в ответе (по умолчанию 50, максимум 200).
+    """
+    if not query:
+        return "Пустой запрос"
+    target = safe_path(path)
+    if not target.is_dir():
+        return f"Папка не найдена: {path}"
+    max_results = min(max(max_results, 1), 200)
+    hits = []
+    for p in sorted(target.rglob("*")):
+        if not p.is_file():
+            continue
+        try:
+            if p.stat().st_size > 5 * 1024 * 1024:
+                continue  # слишком большие файлы пропускаем
+            text = p.read_text(encoding="utf-8", errors="strict")
+        except (UnicodeDecodeError, OSError):
+            continue  # бинарные и недоступные файлы пропускаем
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if query in line:
+                rel = p.relative_to(DATA_DIR)
+                hits.append(f"{rel}:{lineno}: {line.strip()[:200]}")
+                if len(hits) >= max_results:
+                    return "\n".join(hits) + "\n... (обрезано — уточни запрос или путь)"
+    return "\n".join(hits) if hits else "Совпадений нет"
+
+
+@mcp.tool
+def delete_file(path: str) -> str:
+    """Удалить файл или папку в папке проектов на сервере.
+
+    Args:
+        path: Путь относительно папки проектов (например, "landing/draft.html").
+              Папка удаляется вместе со всем содержимым.
+    """
+    target = safe_path(path)
+    if target == DATA_DIR:
+        return "Нельзя удалить корневую папку проектов"
+    if not target.exists():
+        return f"Не найдено: {path}"
+    if target.is_dir():
+        shutil.rmtree(target)
+        return f"Удалена папка с содержимым: {path}"
+    target.unlink()
+    return f"Удалён файл: {path}"
+
+
+@mcp.tool
+def move_file(src: str, dst: str) -> str:
+    """Переместить или переименовать файл/папку в папке проектов.
+
+    Args:
+        src: Откуда (например, "landing/old.html").
+        dst: Куда (например, "landing/new.html"). Недостающие папки создаются.
+    """
+    source = safe_path(src)
+    dest = safe_path(dst)
+    if source == DATA_DIR or dest == DATA_DIR:
+        return "Нельзя перемещать корневую папку проектов"
+    if not source.exists():
+        return f"Не найдено: {src}"
+    if dest.exists():
+        return f"Уже существует: {dst}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(dest))
+    return f"Перемещено: {src} -> {dst}"
 
 
 if __name__ == "__main__":

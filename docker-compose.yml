@@ -40,8 +40,8 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      # Проекты — только чтение, из них собирается архив
-      - ${PROJECTS_DIR:-./projects}:/data:ro
+      # Проекты: чтение — для бэкапа, запись — для восстановления из архива
+      - ${PROJECTS_DIR:-./projects}:/data
       # Настройки панели (overrides.json) + файл-триггер «бэкап сейчас»
       - ./dashboard-data:/config:ro
       # Сюда сервис пишет архивы и last-backup.json
