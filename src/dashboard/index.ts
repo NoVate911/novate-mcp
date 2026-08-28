@@ -96,7 +96,8 @@ function eqStr(a: string, b: string): boolean {
 }
 
 function b64url(buf: Buffer): string {
-  return buf.toString("base64url");
+  // base64url собираем вручную из base64 — не зависим от поддержки кодировки в рантайме
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /** Подписанное HMAC значение cookie: base64url(payload).hex-подпись. */
@@ -248,7 +249,7 @@ async function exchangeCode(code: string, verifier: string): Promise<Record<stri
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: "Basic " + Buffer.from(`${cid}:${secret}`).toString("base64"),
+        Authorization: "Basic " + Buffer.from(cid + ":" + secret).toString("base64"),
       },
       body: new URLSearchParams({
         grant_type: "authorization_code",
@@ -258,12 +259,20 @@ async function exchangeCode(code: string, verifier: string): Promise<Record<stri
         code_verifier: verifier,
       }),
     });
-    if (!res.ok) {
-      const text = await res.text();
-      console.error(`Telegram token endpoint: HTTP ${res.status} — ${text.slice(0, 300)}`);
+    const text = await res.text();
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      console.error("Telegram token endpoint: HTTP " + res.status + ", не JSON: " + text.slice(0, 200));
       return null;
     }
-    return (await res.json()) as Record<string, unknown>;
+    // ВАЖНО: Telegram отвечает HTTP 200 даже на ошибки — смотрим поле error
+    if (!res.ok || typeof data.error === "string") {
+      console.error("Telegram token endpoint: HTTP " + res.status + " — " + text.slice(0, 300));
+      return null;
+    }
+    return data;
   } catch (err) {
     console.error("Telegram token exchange failed:", err);
     return null;
@@ -608,7 +617,7 @@ async function route(req: Request): Promise<Response> {
   if (method === "GET" && path === "/auth/telegram") {
     const state = randomBytes(16).toString("hex");
     const verifier = b64url(randomBytes(32));
-    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    const challenge = b64url(createHash("sha256").update(verifier).digest());
     const params = new URLSearchParams({
       client_id: settings.get("TG_CLIENT_ID"),
       redirect_uri: redirectUri(),
@@ -635,7 +644,7 @@ async function route(req: Request): Promise<Response> {
     }
     const tokens = await exchangeCode(code, String(saved.verifier));
     if (!tokens || typeof tokens.id_token !== "string") {
-      console.error("OIDC callback: обмен кода на токен не удался (деталь выше)");
+      console.error("OIDC callback: нет id_token в ответе, поля: " + (tokens ? Object.keys(tokens).join(",") : "null"));
       return redirect("/login?err=exchange", { "Set-Cookie": clearState });
     }
     const claims = await verifyIdToken(tokens.id_token);
