@@ -418,6 +418,7 @@ def make_backup() -> str:
 
 
 S3_SYNC_TRIGGER = DATA_DIR / ".s3-sync-needed"
+S3_ACTION_TRIGGER = Path(os.environ.get("CONFIG_DIR", "/config")) / "s3-action.json"
 
 
 def watch_external_sync() -> None:
@@ -455,4 +456,7 @@ if __name__ == "__main__":
     threading.Thread(target=watch_mcp_token, daemon=True).start()
     if STORAGE.enabled:
         threading.Thread(target=watch_external_sync, daemon=True).start()
+        threading.Thread(
+            target=STORAGE.maintenance_loop, args=(S3_ACTION_TRIGGER,), daemon=True,
+        ).start()
     mcp.run(transport="http", host="0.0.0.0", port=8000, path="/mcp/")

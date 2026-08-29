@@ -126,6 +126,7 @@ else
   grep -q '^S3_REGION=' .env            || echo 'S3_REGION=' >> .env
   grep -q '^S3_PREFIX=' .env            || echo 'S3_PREFIX=projects/' >> .env
   grep -q '^S3_EXCLUDE=' .env           || echo 'S3_EXCLUDE=' >> .env
+  grep -q '^S3_RECONCILE_INTERVAL=' .env || echo 'S3_RECONCILE_INTERVAL=600' >> .env
 fi
 grep -q '^MCP_TOKEN=.' .env || { echo "ОШИБКА: в .env пустой MCP_TOKEN"; exit 1; }
 if ! grep -q '^SESSION_SECRET=.' .env; then

@@ -10,8 +10,8 @@ RUN pip install --no-cache-dir fastmcp boto3
 
 # Работаем НЕ от root — отдельный пользователь
 RUN useradd --create-home appuser \
-    && mkdir -p /data /config \
-    && chown -R appuser:appuser /data /config
+    && mkdir -p /data /config /storage-state \
+    && chown -R appuser:appuser /data /config /storage-state
 
 COPY src/server.py src/settings.py src/storage.py ./
 
@@ -36,8 +36,8 @@ COPY src/dashboard/ ./
 
 # Клиентский JS: TS -> минифицированный бандл (единственный build-шаг)
 RUN bun build ./client.ts --outdir ./public --minify \
-    && mkdir -p /data /config /backups \
-    && chown -R bun:bun /data /config /backups
+    && mkdir -p /data /config /backups /storage-state \
+    && chown -R bun:bun /data /config /backups /storage-state
 
 USER bun
 

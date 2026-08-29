@@ -145,6 +145,13 @@ EOF
 - Startup merge не удаляет и не перезаписывает существующие локальные файлы:
   скачивает отсутствующие из S3, загружает локальные и при конфликте выбирает
   локальную версию (это восстанавливает S3 после ранее неудачного PUT).
+- Перед обязательной S3-операцией записывай desired state в постоянный outbox
+  `/storage-state/s3-state.json`; успешная операция удаляет запись, ошибка получает
+  exponential backoff. Не обходи outbox в новых mutation points.
+- Maintenance worker повторяет outbox и раз в `S3_RECONCILE_INTERVAL` сверяет
+  manifest, `/data` и S3. Dashboard-команды читает из `/config/s3-action.json`.
+- `/storage-state/status.json` — единственный UI-контракт статуса; он не содержит
+  credentials. Docker volume `storage_state` монтируется MCP rw, dashboard ro и не доступен Caddy.
 - Любая обязательная ошибка S3 должна быть явно возвращена; secret key не логировать.
   Boto3 dependency есть только в MCP image. Backup остаётся stdlib-only.
 - После restore backup пишет `/data/.s3-sync-needed`; MCP watcher синхронизирует delta.

@@ -13,8 +13,10 @@ services:
       - ${PROJECTS_DIR:-./projects}:/data
       # Время внутри контейнера = как на хосте
       - /etc/localtime:/etc/localtime:ro
-      # Переопределения настроек из панели (только чтение)
+      # Переопределения настроек и безопасные команды S3 из панели (только чтение)
       - ./dashboard-data:/config:ro
+      # Постоянный S3 outbox/manifest/status; не публикуется через Caddy
+      - storage_state:/storage-state
     networks:
       - web
 
@@ -30,6 +32,8 @@ services:
       - ./dashboard-data:/config
       # Архивы бэкапов: чтение + запись только для проверенных загрузок из панели
       - ./backups:/backups
+      # Панель видит только безопасный status.json, не credentials
+      - storage_state:/storage-state:ro
       # Время внутри контейнера = как на хосте
       - /etc/localtime:/etc/localtime:ro
     networks:
@@ -74,6 +78,7 @@ services:
       - dashboard
 
 volumes:
+  storage_state:
   caddy_data:
   caddy_config:
 

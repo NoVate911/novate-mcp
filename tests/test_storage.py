@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -48,7 +49,9 @@ class FakeS3:
 def s3(root: Path, fake: FakeS3) -> S3Storage:
     return S3Storage(root, endpoint="https://s3.regru.cloud", access_key="access",
                      secret_key="secret", bucket="bucket", region="ru-1",
-                     prefix="projects/", client=fake)
+                     prefix="projects/", client=fake,
+                     state_dir=root.parent / (root.name + "-state"),
+                     reconcile_interval=30)
 
 
 class StorageTests(unittest.TestCase):
@@ -57,7 +60,9 @@ class StorageTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.fake = FakeS3()
 
-    def tearDown(self): self.tmp.cleanup()
+    def tearDown(self):
+        shutil.rmtree(self.root.parent / (self.root.name + "-state"), ignore_errors=True)
+        self.tmp.cleanup()
 
     def test_local_mode_and_excludes(self):
         storage = create_storage(self.root, {"S3_ENABLED": "false"})
@@ -97,6 +102,50 @@ class StorageTests(unittest.TestCase):
         self.fake.fail = "upload"
         with self.assertRaises(StorageError) as raised: storage.put_file(file)
         self.assertNotIn("secret", str(raised.exception).lower())
+
+    def test_durable_outbox_survives_restart(self):
+        storage = s3(self.root, self.fake)
+        file = self.root / "queued.txt"; file.write_text("queued")
+        self.fake.fail = "upload"
+        with self.assertRaises(StorageError): storage.put_file(file)
+        state = json.loads(storage.state_file.read_text())
+        self.assertEqual(len(state["outbox"]), 1)
+        self.fake.fail = None
+        restarted = s3(self.root, self.fake)
+        restarted.flush_outbox(force=True, raise_errors=True)
+        self.assertEqual(self.fake.objects["projects/queued.txt"], b"queued")
+        self.assertEqual(json.loads(restarted.state_file.read_text())["outbox"], [])
+        status = json.loads(restarted.status_file.read_text())
+        self.assertEqual(status["pending"], 0)
+        self.assertEqual(status["connection"], "ok")
+
+    def test_pending_delete_is_not_resurrected_on_restart(self):
+        storage = s3(self.root, self.fake)
+        file = self.root / "gone.txt"; file.write_text("gone")
+        storage.put_file(file); file.unlink()
+        self.fake.fail = "delete"
+        with self.assertRaises(StorageError): storage.delete_path("gone.txt", False)
+        self.fake.fail = None
+        s3(self.root, self.fake).startup_merge()
+        self.assertFalse(file.exists())
+        self.assertNotIn("projects/gone.txt", self.fake.objects)
+
+    def test_periodic_reconcile_repairs_and_recovers(self):
+        storage = s3(self.root, self.fake)
+        file = self.root / "app.txt"; file.write_text("v1")
+        storage.put_file(file)
+        file.write_text("version-two")
+        result = storage.reconcile_now()
+        self.assertGreaterEqual(result.uploaded, 1)
+        self.assertEqual(self.fake.objects["projects/app.txt"], b"version-two")
+        self.fake.objects["projects/from-cloud.txt"] = b"cloud"
+        result = storage.reconcile_now()
+        self.assertGreaterEqual(result.downloaded, 1)
+        self.assertEqual((self.root / "from-cloud.txt").read_bytes(), b"cloud")
+        file.unlink()
+        result = storage.reconcile_now()
+        self.assertGreaterEqual(result.deleted, 1)
+        self.assertNotIn("projects/app.txt", self.fake.objects)
 
     def test_shell_delta_upload_and_delete(self):
         storage = s3(self.root, self.fake)

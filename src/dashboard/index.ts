@@ -14,6 +14,7 @@
  *   GET  /backup-file/<имя> — скачивание архива бэкапа (нужен вход)
  *   GET  /settings          — настройки (нужен вход)
  *   POST /settings          — сохранить/сбросить переопределение (нужен вход)
+ *   POST /s3-action         — проверить/синхронизировать/восстановить S3
  *   GET  /login             — страница входа (кнопка «Войти через Telegram»)
  *   GET  /auth/telegram     — старт входа: редирект на Telegram OIDC
  *   GET  /auth/callback     — callback Telegram OIDC (code -> id_token -> сессия)
@@ -36,6 +37,7 @@ import { esc, fmtTime, header, humanSize, loginPage, mask, shell, toast } from "
 
 const DATA_DIR = resolve(process.env.MCP_DATA_DIR || "/data");
 const CONFIG_DIR = process.env.CONFIG_DIR || "/config";
+const S3_STATUS_FILE = process.env.S3_STATUS_FILE || "/storage-state/status.json";
 const BACKUP_DIR = resolve(process.env.BACKUP_DIR || "/backups");
 const COOKIE_NAME = "dash_auth";
 const COOKIE_TTL = 7 * 24 * 3600;
@@ -736,6 +738,8 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     flash = toast("Настройка сохранена.", "success");
   } else if (!generated && url.searchParams.has("reset")) {
     flash = toast("Переопределение сброшено — снова действует значение из .env.", "success");
+  } else if (!generated && url.searchParams.has("s3-action")) {
+    flash = toast("Команда S3 принята. Статус обновится в течение нескольких секунд.", "success");
   }
 
   const rows: Record<SettingSection, string[]> = {
@@ -804,6 +808,32 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `<span class="badge env">.env</span></div></td><td>${esc(value)}</td></tr>`,
   ));
 
+  let s3Status: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(S3_STATUS_FILE, "utf8"));
+    if (parsed && typeof parsed === "object") s3Status = parsed;
+  } catch { /* MCP ещё не создал status.json или S3 выключен */ }
+  if (!s3Enabled) s3Status = {};
+  const statusResult = s3Status.last_result && typeof s3Status.last_result === "object"
+    ? s3Status.last_result as Record<string, unknown> : {};
+  const connection = !s3Enabled ? "Отключено"
+    : s3Status.connection === "ok" ? "Подключено"
+    : s3Status.connection === "error" ? "Ошибка" : "Запускается";
+  const runtimeInfo: Array<[string, string]> = [
+    ["Состояние", connection],
+    ["Операций в очереди", String(s3Status.pending ?? 0)],
+    ["Статус обновлён", String(s3Status.updated_at || "—")],
+    ["Последняя успешная операция", String(s3Status.last_success || "—")],
+    ["Последняя полная сверка", String(s3Status.last_reconcile || "—")],
+    ["Последний результат", `PUT: ${statusResult.uploaded ?? 0}, DELETE: ${statusResult.deleted ?? 0}, `
+      + `скачано: ${statusResult.downloaded ?? 0}`],
+    ["Последняя ошибка", String(s3Status.last_error || "—")],
+  ];
+  rows.storage.push(...runtimeInfo.map(([key, value]) =>
+    `<tr><td style="width:210px"><div class="setting-name"><b>${esc(key)}</b>`
+    + `<span class="badge panel">runtime</span></div></td><td>${esc(value)}</td></tr>`,
+  ));
+
   const noteBlock =
     `<div class="note rise"><b>Управление настройками</b><br>`
     + `Изменения сохраняются как переопределения и применяются автоматически.<br>`
@@ -827,7 +857,13 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `data-settings-panel="${section.id}"${section.id === activeTab ? "" : " hidden"}>`
     + `<div class="settings-section-head"><h2>${esc(section.label)}</h2>`
     + `<p>${esc(section.description)}</p></div>`
-    + `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div></section>`,
+    + `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>`
+    + (section.id === "storage" && s3Enabled
+      ? `<div class="actions" style="margin-top:16px">`
+        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="check">Проверить подключение</button></form>`
+        + `<form method="post" action="/s3-action"><button class="btn" name="action" value="sync">Синхронизировать сейчас</button></form>`
+        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="recover">Восстановить отсутствующие</button></form>`
+        + `</div>` : "") + `</section>`,
   ).join("");
 
   return shell("NoVate MCP — настройки",
@@ -1119,6 +1155,18 @@ async function route(req: Request): Promise<Response> {
         "Content-Disposition": `attachment; filename="${name}"`,
       },
     });
+  }
+
+  if (method === "POST" && path === "/s3-action") {
+    const form = await req.formData();
+    const action = String(form.get("action") || "");
+    if (!["check", "sync", "recover"].includes(action)) {
+      return redirect("/settings?tab=storage");
+    }
+    writeFileSync(`${CONFIG_DIR}/s3-action.json`, JSON.stringify({
+      action, requested_at: new Date().toISOString(), requested_by: session.uid,
+    }), { encoding: "utf8", mode: 0o600 });
+    return redirect("/settings?tab=storage&s3-action=1");
   }
 
   if (method === "GET" && path === "/settings") return html(settingsPage(url, session.name));

@@ -7,10 +7,13 @@ S3 никогда не монтируется как файловая систе
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import threading
+import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Protocol
 from urllib.parse import urlparse
@@ -127,7 +130,7 @@ class LocalStorage(Storage):
     """Текущее поведение: /data на bind mount, без внешней синхронизации."""
 
 
-class S3Storage(Storage):
+class S3StorageCore(Storage):
     enabled = True
 
     def __init__(
@@ -398,6 +401,400 @@ class S3Storage(Storage):
             return SyncResult(uploaded=uploaded, downloaded=downloaded, conflicts=conflicts)
 
 
+
+class S3Storage(S3StorageCore):
+    """S3 backend с постоянным outbox, manifest и периодической сверкой."""
+
+    def __init__(self, *args, state_dir: Path | None = None,
+                 reconcile_interval: int = 600, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.state_dir = (state_dir or (self.root / ".novate-state")).resolve()
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.state_dir.chmod(0o700)
+        except OSError:
+            pass
+        self.state_file = self.state_dir / "s3-state.json"
+        self.status_file = self.state_dir / "status.json"
+        self.reconcile_interval = max(int(reconcile_interval), 30)
+        self._state = self._load_state()
+        self._write_status(connection="initializing")
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _load_state(self) -> dict:
+        if not self.state_file.exists():
+            return {"version": 1, "outbox": [], "manifest": {}}
+        try:
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
+            if (not isinstance(data, dict) or data.get("version") != 1
+                    or not isinstance(data.get("outbox", []), list)
+                    or not isinstance(data.get("manifest", {}), dict)):
+                raise ValueError("invalid schema")
+            data.setdefault("outbox", [])
+            data.setdefault("manifest", {})
+            return data
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise StorageError(
+                "постоянное состояние S3 повреждено; проверь /storage-state/s3-state.json"
+            ) from exc
+
+    @staticmethod
+    def _atomic_json(path: Path, data: dict) -> None:
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            temp.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(temp, path)
+
+    def _save_state(self) -> None:
+        self._atomic_json(self.state_file, self._state)
+
+    def _write_status(self, **updates) -> None:
+        try:
+            current = json.loads(self.status_file.read_text(encoding="utf-8"))
+            if not isinstance(current, dict):
+                current = {}
+        except Exception:
+            current = {}
+        current.update({
+            "enabled": True,
+            "endpoint": self.endpoint,
+            "bucket": self.bucket,
+            "region": self.region,
+            "prefix": self.prefix,
+            "pending": len(self._state.get("outbox", [])),
+            "updated_at": self._now(),
+        })
+        current.update(updates)
+        self._atomic_json(self.status_file, current)
+
+    def _queue(self, action: str, path: str, *, is_directory: bool = False,
+               destination: str = "", persist: bool = True) -> str:
+        normalized = path.replace("\\", "/").strip("/")
+        outbox = self._state["outbox"]
+        # Последнее желаемое состояние заменяет прежний PUT/DELETE того же пути.
+        outbox[:] = [entry for entry in outbox if not (
+            entry.get("path") == normalized and entry.get("action") in {"put", "delete"}
+        )]
+        entry = {
+            "id": uuid.uuid4().hex,
+            "action": action,
+            "path": normalized,
+            "destination": destination.replace("\\", "/").strip("/"),
+            "is_directory": bool(is_directory),
+            "attempts": 0,
+            "next_retry": 0.0,
+            "created_at": self._now(),
+            "last_error": "",
+        }
+        outbox.append(entry)
+        if persist:
+            self._save_state()
+            self._write_status()
+        return entry["id"]
+
+    def _entry(self, entry_id: str) -> dict | None:
+        return next((entry for entry in self._state["outbox"]
+                     if entry.get("id") == entry_id), None)
+
+    def _complete(self, entry_id: str) -> None:
+        self._state["outbox"] = [entry for entry in self._state["outbox"]
+                                 if entry.get("id") != entry_id]
+        self._save_state()
+        self._write_status(connection="ok", last_success=self._now(), last_error="")
+
+    def _failed(self, entry_id: str, exc: StorageError) -> None:
+        entry = self._entry(entry_id)
+        if entry is not None:
+            entry["attempts"] = int(entry.get("attempts", 0)) + 1
+            entry["last_error"] = str(exc)
+            entry["next_retry"] = time.time() + min(
+                30 * (2 ** min(entry["attempts"] - 1, 7)), 3600
+            )
+            self._save_state()
+        self._write_status(connection="error", last_error=str(exc))
+
+    def _manifest_set(self, rel: str) -> None:
+        path = self._local_path(rel)
+        if not path.is_file() or path.is_symlink():
+            return
+        stat = path.stat()
+        self._state["manifest"][rel] = {
+            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+        }
+
+    def _manifest_remove(self, rel: str, is_directory: bool) -> None:
+        manifest = self._state["manifest"]
+        if is_directory:
+            prefix = rel.rstrip("/") + "/"
+            for key in list(manifest):
+                if key == rel or key.startswith(prefix):
+                    manifest.pop(key, None)
+        else:
+            manifest.pop(rel, None)
+
+    def _record_tree(self, rel: str) -> None:
+        target = self._local_path(rel)
+        if target.is_file():
+            self._manifest_set(rel)
+        elif target.is_dir():
+            for path in target.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    child = path.relative_to(self.root).as_posix()
+                    if not self.is_excluded(child):
+                        self._manifest_set(child)
+
+    def validate(self) -> None:
+        try:
+            super().validate()
+            self._write_status(connection="ok", last_check=self._now(), last_error="")
+        except StorageError as exc:
+            self._write_status(connection="error", last_check=self._now(), last_error=str(exc))
+            raise
+
+    def put_file(self, path: Path) -> None:
+        rel = self.relative(path)
+        if self.is_excluded(rel) or path.is_symlink() or not path.is_file():
+            return
+        with self._lock:
+            entry_id = self._queue("put", rel)
+            try:
+                super().put_file(path)
+                self._manifest_set(rel)
+                self._complete(entry_id)
+            except StorageError as exc:
+                self._failed(entry_id, exc)
+                raise
+
+    def delete_path(self, rel: str, is_directory: bool) -> None:
+        if self.is_excluded(rel):
+            return
+        with self._lock:
+            entry_id = self._queue("delete", rel, is_directory=is_directory)
+            try:
+                super().delete_path(rel, is_directory)
+                self._manifest_remove(rel, is_directory)
+                self._complete(entry_id)
+            except StorageError as exc:
+                self._failed(entry_id, exc)
+                raise
+
+    def move_path(self, src: str, dst: str, is_directory: bool) -> None:
+        with self._lock:
+            entry_id = self._queue("move", src, is_directory=is_directory, destination=dst)
+            try:
+                super().move_path(src, dst, is_directory)
+                self._manifest_remove(src, is_directory)
+                self._record_tree(dst)
+                self._complete(entry_id)
+            except StorageError as exc:
+                self._failed(entry_id, exc)
+                raise
+
+    def sync_changes(self, before: Snapshot) -> SyncResult:
+        with self._lock:
+            after = self.snapshot()
+            changed = [rel for rel, state in after.items() if before.get(rel) != state]
+            removed = [rel for rel in before if rel not in after]
+            ids = [self._queue("put", rel, persist=False) for rel in changed]
+            ids += [self._queue("delete", rel, persist=False) for rel in removed]
+            self._save_state()
+            self._write_status()
+            self.flush_outbox(force=True, only_ids=set(ids), raise_errors=True)
+            return SyncResult(uploaded=len(changed), deleted=len(removed))
+
+    def _put_tree_now(self, rel: str) -> None:
+        target = self._local_path(rel)
+        paths = target.rglob("*") if target.is_dir() else [target]
+        for path in paths:
+            if path.is_file() and not path.is_symlink():
+                child = path.relative_to(self.root).as_posix()
+                if not self.is_excluded(child):
+                    super().put_file(path)
+                    self._manifest_set(child)
+
+    def _execute_entry(self, entry: dict) -> None:
+        action = entry["action"]
+        rel = entry["path"]
+        target = self._local_path(rel)
+        if action == "put":
+            if target.is_file() and not target.is_symlink():
+                super().put_file(target)
+                self._manifest_set(rel)
+            else:
+                super().delete_path(rel, False)
+                self._manifest_remove(rel, False)
+        elif action == "delete":
+            # Если server откатил локальное удаление, локальная версия снова истинна.
+            if target.exists() and not target.is_symlink():
+                self._put_tree_now(rel)
+            else:
+                super().delete_path(rel, bool(entry.get("is_directory")))
+                self._manifest_remove(rel, bool(entry.get("is_directory")))
+        elif action == "move":
+            dst = entry.get("destination", "")
+            destination = self._local_path(dst)
+            # Retry сводит S3 к текущему локальному состоянию, даже если server
+            # уже откатил локальный rename после первой ошибки.
+            if destination.exists() and not destination.is_symlink():
+                self._put_tree_now(dst)
+                super().delete_path(rel, bool(entry.get("is_directory")))
+                self._manifest_remove(rel, bool(entry.get("is_directory")))
+            elif target.exists() and not target.is_symlink():
+                self._put_tree_now(rel)
+                super().delete_path(dst, bool(entry.get("is_directory")))
+            else:
+                super().delete_path(rel, bool(entry.get("is_directory")))
+                super().delete_path(dst, bool(entry.get("is_directory")))
+        else:
+            raise StorageError("неизвестная операция в S3 outbox")
+
+    def flush_outbox(self, *, force: bool = False, only_ids: set[str] | None = None,
+                     raise_errors: bool = False) -> int:
+        completed = 0
+        first_error: StorageError | None = None
+        with self._lock:
+            for entry in list(self._state["outbox"]):
+                if only_ids is not None and entry.get("id") not in only_ids:
+                    continue
+                if not force and float(entry.get("next_retry", 0)) > time.time():
+                    continue
+                try:
+                    self._execute_entry(entry)
+                    self._state["outbox"] = [item for item in self._state["outbox"]
+                                             if item.get("id") != entry.get("id")]
+                    completed += 1
+                except StorageError as exc:
+                    current = self._entry(str(entry.get("id", "")))
+                    if current is not None:
+                        current["attempts"] = int(current.get("attempts", 0)) + 1
+                        current["last_error"] = str(exc)
+                        current["next_retry"] = time.time() + min(
+                            30 * (2 ** min(current["attempts"] - 1, 7)), 3600
+                        )
+                    first_error = first_error or exc
+            self._save_state()
+            if first_error is None:
+                self._write_status(connection="ok", last_success=self._now(), last_error="")
+            else:
+                self._write_status(connection="error", last_error=str(first_error))
+            if first_error is not None and raise_errors:
+                raise first_error
+        return completed
+
+    def recover_missing(self) -> SyncResult:
+        downloaded = 0
+        with self._lock:
+            for obj in self._objects():
+                rel = self.rel_from_key(str(obj.get("Key", "")))
+                if not rel or self.is_excluded(rel):
+                    continue
+                target = self._local_path(rel)
+                if not target.exists() and super().fetch_if_missing(rel):
+                    self._manifest_set(rel)
+                    downloaded += 1
+            self._save_state()
+            self._write_status(connection="ok", last_success=self._now(), last_error="")
+        return SyncResult(downloaded=downloaded)
+
+    def reconcile_now(self) -> SyncResult:
+        """Сверяет локальный manifest и реальные S3 keys; локальная версия приоритетна."""
+        with self._lock:
+            local = self.snapshot()
+            manifest = self._state["manifest"]
+            remote = {
+                rel: obj for obj in self._objects()
+                if (rel := self.rel_from_key(str(obj.get("Key", ""))))
+                and not self.is_excluded(rel)
+            }
+            queued_put = queued_delete = downloaded = 0
+            for rel, state in local.items():
+                saved = manifest.get(rel, {})
+                if (saved.get("size"), saved.get("mtime_ns")) != state or rel not in remote:
+                    self._queue("put", rel, persist=False)
+                    queued_put += 1
+            for rel in list(manifest):
+                if rel not in local:
+                    self._queue("delete", rel, persist=False)
+                    queued_delete += 1
+            # Новый объект, добавленный непосредственно в bucket, безопасно
+            # восстанавливается только если локального пути и manifest ещё нет.
+            for rel in remote:
+                if rel not in local and rel not in manifest:
+                    if super().fetch_if_missing(rel):
+                        self._manifest_set(rel)
+                        downloaded += 1
+            # Журнал целиком фиксируется до первой сетевой операции.
+            self._save_state()
+            self._write_status()
+            self.flush_outbox(force=True, raise_errors=True)
+            self._save_state()
+            now = self._now()
+            self._write_status(
+                connection="ok", last_reconcile=now, last_success=now, last_error="",
+                next_reconcile=time.time() + self.reconcile_interval,
+                last_result={"uploaded": queued_put, "deleted": queued_delete,
+                             "downloaded": downloaded},
+            )
+            return SyncResult(uploaded=queued_put, deleted=queued_delete,
+                              downloaded=downloaded)
+
+    def startup_merge(self) -> SyncResult:
+        # Сначала применяем журнал прошлого запуска, чтобы ожидающий DELETE не был
+        # ошибочно восстановлен обратно из ещё не очищенного S3.
+        self.flush_outbox(force=True, raise_errors=True)
+        result = super().startup_merge()
+        # Reconcile создаёт/проверяет manifest после безопасного merge.
+        reconciled = self.reconcile_now()
+        return SyncResult(
+            uploaded=result.uploaded + reconciled.uploaded,
+            deleted=reconciled.deleted,
+            downloaded=result.downloaded + reconciled.downloaded,
+            conflicts=result.conflicts,
+        )
+
+    def maintenance_loop(self, action_file: Path) -> None:
+        """Retry outbox, периодическая сверка и команды из dashboard."""
+        try:
+            last_action = action_file.stat().st_mtime_ns
+        except OSError:
+            last_action = 0
+        next_reconcile = time.time() + self.reconcile_interval
+        while True:
+            try:
+                self.flush_outbox()
+                try:
+                    current_action = action_file.stat().st_mtime_ns
+                except OSError:
+                    current_action = 0
+                if current_action > last_action:
+                    last_action = current_action
+                    payload = json.loads(action_file.read_text(encoding="utf-8"))
+                    action = payload.get("action")
+                    if action == "check":
+                        self.validate()
+                    elif action == "sync":
+                        self.reconcile_now()
+                    elif action == "recover":
+                        result = self.recover_missing()
+                        self._write_status(last_action="recover", last_result={
+                            "uploaded": 0, "deleted": 0, "downloaded": result.downloaded,
+                        })
+                    else:
+                        raise StorageError("неизвестная команда dashboard")
+                if time.time() >= next_reconcile:
+                    self.reconcile_now()
+                    next_reconcile = time.time() + self.reconcile_interval
+            except (StorageError, OSError, ValueError, json.JSONDecodeError) as exc:
+                safe = str(exc) if isinstance(exc, StorageError) else type(exc).__name__
+                self._write_status(connection="error", last_error=safe)
+            time.sleep(5)
+
 def create_storage(
     root: Path,
     environ: Mapping[str, str] | None = None,
@@ -415,6 +812,10 @@ def create_storage(
     if missing:
         raise StorageError("S3 включён, но не заданы: " + ", ".join(missing))
     extra = tuple(item.strip() for item in env.get("S3_EXCLUDE", "").split(",") if item.strip())
+    try:
+        reconcile_interval = int(env.get("S3_RECONCILE_INTERVAL", "600") or "600")
+    except ValueError as exc:
+        raise StorageError("S3_RECONCILE_INTERVAL должен быть целым числом секунд") from exc
     storage = S3Storage(
         root,
         endpoint=env["S3_ENDPOINT"].strip(),
@@ -425,6 +826,8 @@ def create_storage(
         prefix=env.get("S3_PREFIX", "projects/").strip() or "projects/",
         excludes=tuple(dict.fromkeys(MANDATORY_EXCLUDES + extra)),
         client=client,
+        state_dir=Path(env.get("S3_STATE_DIR", "/storage-state")),
+        reconcile_interval=reconcile_interval,
     )
     if validate:
         storage.validate()
