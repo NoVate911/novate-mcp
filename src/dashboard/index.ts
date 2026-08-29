@@ -648,35 +648,49 @@ function backupsPage(url: URL, user: string): string {
   const st = backupStatus();
   let statusHtml: string;
   if (st?.error) {
-    statusHtml = `<div class="note rise" style="border-left-color:#ff5a6e">`
-      + `<b>Не удалось создать резервную копию</b><br>`
-      + `${esc(st.error)}${st.time ? `<br><span class="hint">${esc(fmtTime(Date.parse(st.time)))}</span>` : ""}</div>`;
+    const attemptTime = st.time
+      ? `<div class="settings-guide-points"><span>Последняя попытка: ${esc(fmtTime(Date.parse(st.time)))}</span></div>`
+      : "";
+    statusHtml = `<section class="settings-guide backup-guide backup-guide-error rise">`
+      + `<div class="settings-guide-icon" aria-hidden="true">!</div>`
+      + `<div class="settings-guide-copy"><span class="settings-guide-kicker">Резервное копирование</span>`
+      + `<h1>Не удалось создать резервную копию</h1>`
+      + `<p>${esc(st.error)}</p>${attemptTime}</div></section>`;
   } else if (st?.time) {
     const telegramLine = st.telegram === "ok"
-      ? "Отправлено в Telegram ✅"
+      ? "Отправлено в Telegram"
       : st.telegram === "skipped"
-        ? "Telegram не настроен — копия сохранена только на сервере"
+        ? "Telegram не настроен — копия сохранена на сервере"
         : st.telegram && st.telegram.startsWith("error")
-          ? `Ошибка отправки в Telegram: ${esc(st.telegram.slice(7).trim())}`
-          : "Статус отправки в Telegram неизвестен";
+          ? `Ошибка Telegram: ${esc(st.telegram.slice(7).trim())}`
+          : "Статус Telegram неизвестен";
     const intervalH = Number(settings.get("BACKUP_INTERVAL_HOURS")) || 24;
     const next = Date.parse(st.time) + intervalH * 3600_000;
-    const nextLine = Number.isFinite(next)
-      ? `<br><span class="hint">Следующая копия: ${esc(fmtTime(next))}</span>`
+    const nextPoint = Number.isFinite(next)
+      ? `<span>Следующая копия: ${esc(fmtTime(next))}</span>`
       : "";
-    const restoreLine = st.restore
-      ? `<br><span class="hint">Восстановление: ${esc(st.restore)}</span>`
+    const restorePoint = st.restore
+      ? `<span>Восстановление: ${esc(st.restore)}</span>`
       : "";
-    statusHtml = `<div class="note rise"><b>Последняя резервная копия</b><br>`
-      + `Файл: <b>${esc(st.file || "—")}</b><br>`
-      + `Размер: ${humanSize(st.size || 0)}<br>`
-      + `Создана: ${esc(fmtTime(Date.parse(st.time)))}<br>`
-      + `Защита: ${st.encrypted ? "AES-256 🔐" : "без шифрования"}<br>`
-      + `Telegram: ${telegramLine}${nextLine}${restoreLine}</div>`;
+    statusHtml = `<section class="settings-guide backup-guide rise">`
+      + `<div class="settings-guide-icon" aria-hidden="true">▣</div>`
+      + `<div class="settings-guide-copy"><span class="settings-guide-kicker">Резервное копирование</span>`
+      + `<h1>Последняя копия готова</h1>`
+      + `<p>Архив <b>${esc(st.file || "—")}</b> создан ${esc(fmtTime(Date.parse(st.time)))} `
+      + `и доступен для скачивания или восстановления.</p>`
+      + `<div class="settings-guide-points"><span>${humanSize(st.size || 0)}</span>`
+      + `<span>${st.encrypted ? "Защищено AES-256" : "Без шифрования"}</span>`
+      + `<span>${telegramLine}</span>${nextPoint}${restorePoint}</div></div></section>`;
   } else {
-    statusHtml = `<div class="note rise"><b>Резервных копий пока нет</b><br>`
-      + `Сервис создаст первую копию автоматически. Также можно запустить создание `
-      + `вручную кнопкой ниже.</div>`;
+    statusHtml = `<section class="settings-guide backup-guide rise">`
+      + `<div class="settings-guide-icon" aria-hidden="true">▣</div>`
+      + `<div class="settings-guide-copy"><span class="settings-guide-kicker">Резервное копирование</span>`
+      + `<h1>Сохраните проекты в надёжной копии</h1>`
+      + `<p>Сервис создаст первый архив автоматически по расписанию. При необходимости `
+      + `запустите копирование вручную или загрузите готовый бэкап.</p>`
+      + `<div class="settings-guide-points"><span>Автоматическое создание по расписанию</span>`
+      + `<span>Шифрование настраивается в панели</span>`
+      + `<span>Готовый архив можно отправлять в Telegram</span></div></div></section>`;
   }
 
   let rows = "";

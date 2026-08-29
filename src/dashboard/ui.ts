@@ -254,6 +254,15 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   border-radius: 8px; font-size: 11px;
 }
 .settings-guide-points span::before { content: "✓"; color: var(--accent); font-weight: 900; }
+.backup-guide-error {
+  background: linear-gradient(135deg, rgba(255, 90, 110, .11), rgba(255, 90, 110, .025) 58%, transparent);
+  border-color: rgba(255, 90, 110, .24);
+}
+.backup-guide-error::after { background: #ff5a6e; }
+.backup-guide-error .settings-guide-icon {
+  color: #ff7b8c; background: rgba(255, 90, 110, .09); border-color: rgba(255, 90, 110, .24);
+}
+.backup-guide-error .settings-guide-kicker { color: #ff7b8c; }
 .settings-group + .settings-group { margin-top: 30px; }
 .settings-group-head { display: flex; justify-content: space-between; gap: 16px; margin: 0 4px 12px; }
 .settings-group-head h3 { margin: 0 0 5px; font-size: 17px; letter-spacing: -.01em; }
