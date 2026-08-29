@@ -40,16 +40,16 @@ def read_overrides():
 
 def get(key):
     """Эффективное значение: переопределение панели, иначе .env, иначе дефолт."""
-    ov = read_overrides().get(key)
-    if isinstance(ov, str) and ov.strip():
-        return ov.strip()
+    overrides = read_overrides()
+    if key in overrides and isinstance(overrides[key], str):
+        return overrides[key].strip()
     return os.environ.get(key, DEFAULTS.get(key, ""))
 
 
 def source(key):
     """Откуда взято текущее значение: 'panel' или 'env'."""
-    ov = read_overrides().get(key)
-    return "panel" if isinstance(ov, str) and ov.strip() else "env"
+    overrides = read_overrides()
+    return "panel" if key in overrides and isinstance(overrides[key], str) else "env"
 
 
 def set_override(key, value):

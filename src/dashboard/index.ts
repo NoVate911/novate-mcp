@@ -51,45 +51,42 @@ const TG_JWKS_URL = "https://oauth.telegram.org/.well-known/jwks.json";
 const TG_ISSUER = "https://oauth.telegram.org";
 
 // Редактируемые в панели настройки
-const EDITABLE = [
+type SettingMode = "text" | "external-secret" | "generated-secret";
+type EditableSetting = {
+  key: string; label: string; hint: string; mode: SettingMode;
+};
+
+const EDITABLE: EditableSetting[] = [
   { key: "ALLOWED_TG_USERS", label: "Telegram ID с доступом в панель",
-    hint: "Через запятую. Применяется сразу — убранный из списка теряет доступ мгновенно. "
-      + "ID отклонённых попыток входа видны в логах: docker compose logs dashboard",
-    secret: false },
+    hint: "Редактируйте весь список через запятую: можно дописывать новые ID и удалять старые. Применяется сразу.",
+    mode: "text" },
   { key: "TG_CLIENT_ID", label: "Telegram OIDC Client ID",
-    hint: "ID OIDC-приложения из @BotFather. Применяется сразу.", secret: false },
+    hint: "ID OIDC-приложения из @BotFather. Применяется сразу.", mode: "text" },
   { key: "TG_CLIENT_SECRET", label: "Telegram OIDC Client Secret",
-    hint: "Секрет OIDC-приложения из @BotFather. Применяется сразу.", secret: true },
+    hint: "Выдаётся @BotFather, поэтому локально не генерируется. Поле пустое, пока секрет не заменяется.",
+    mode: "external-secret" },
   { key: "SESSION_SECRET", label: "Секрет сессий панели",
-    hint: "Применяется сразу. Все текущие сессии разлогинятся.", secret: true },
+    hint: "Генерируется панелью. После замены все текущие сессии завершаются.",
+    mode: "generated-secret" },
   { key: "MCP_TOKEN", label: "Токен MCP-доступа (Bearer)",
-    hint: "Нужен перезапуск: docker compose restart mcp. Затем обнови токен в своём MCP-клиенте.",
-    secret: true },
+    hint: "Генерируется панелью. MCP-сервис автоматически перечитает токен и перезапустит свой процесс.",
+    mode: "generated-secret" },
   { key: "DOMAIN", label: "Домен сервера",
     hint: "Ссылки в панели и callback Telegram — сразу. HTTPS-домен Caddy меняется через .env + install.sh.",
-    secret: false },
-  { key: "TG_BOT_TOKEN", label: "Токен бота для бэкапов",
-    hint: "Бот присылает архивы в чат TG_CHAT_ID. Применяется в течение минуты.",
-    secret: true },
+    mode: "text" },
+  { key: "TG_BOT_TOKEN", label: "Токен Telegram-бота",
+    hint: "Выдаётся @BotFather, поэтому локально не генерируется. Применяется в течение минуты.",
+    mode: "external-secret" },
   { key: "TG_CHAT_ID", label: "ID чата для бэкапов",
-    hint: "Личный ID — бэкапы придут в личку (бота нужно один раз запустить кнопкой Start). "
-      + "Применяется в течение минуты.",
-    secret: false },
+    hint: "Можно отредактировать текущее значение или очистить поле. Применяется в течение минуты.",
+    mode: "text" },
   { key: "BACKUP_INTERVAL_HOURS", label: "Интервал бэкапов, часов",
-    hint: "Как часто делать бэкап. Применяется в течение минуты.", secret: false },
+    hint: "Как часто делать бэкап. Применяется в течение минуты.", mode: "text" },
   { key: "BACKUP_KEEP", label: "Локальных копий бэкапов",
-    hint: "Столько последних архивов хранится в папке backups на сервере, старые удаляются.",
-    secret: false },
+    hint: "Столько последних архивов хранится на сервере.", mode: "text" },
   { key: "BACKUP_PASSWORD", label: "Пароль шифрования бэкапов (AES-256)",
-    hint: "Если задан — архивы шифруются (файлы .enc). Применяется в течение минуты. "
-      + "Расшифровка скачанного: openssl enc -d -aes-256-cbc -pbkdf2 -in файл.enc -out файл.tar.gz",
-    secret: true },
-];
-
-// Только для просмотра
-const INFO_ONLY = [
-  { key: "PROJECTS_DIR", label: "Папка проектов",
-    hint: "Меняется только в .env на сервере, затем bash install.sh." },
+    hint: "Генерируется панелью и применяется в течение минуты. Сохраните копию: без неё .enc не расшифровать.",
+    mode: "generated-secret" },
 ];
 
 // ---------- безопасность ----------
@@ -369,7 +366,7 @@ function walk(dir: string): { files: number; size: number; latest: number } {
 function indexPage(url: URL, user: string): string {
   const domain = settings.get("DOMAIN");
   const notification = url.searchParams.get("error") === "project-archive"
-    ? toast("Не удалось подготовить архив проекта.", "error")
+    ? toast("Не удалось начать скачивание проекта.", "error")
     : "";
   const cards: string[] = [];
   let totalSize = 0, totalFiles = 0;
@@ -392,7 +389,9 @@ function indexPage(url: URL, user: string): string {
       : "";
     const download = `<a class="tag" href="/download-project/${encodeURIComponent(name)}">Скачать</a>`;
     cards.push(
-      `<div class="card rise" style="animation-delay:${120 + i * 70}ms">`
+      `<div class="card rise" data-filter-item data-name="${esc(name.toLocaleLowerCase("ru"))}" `
+      + `data-modified="${st.latest}" data-size="${st.size}" data-files="${st.files}" `
+      + `data-kind="${hasIndex ? "site" : "project"}" style="animation-delay:${120 + i * 70}ms">`
       + `<a class="main" href="/browse/${encodeURIComponent(name)}">`
       + `<div class="name">📁 ${esc(name)}</div>`
       + `<div class="meta">${st.files} файлов · ${humanSize(st.size)} · изменён ${fmtTime(st.latest)}</div>`
@@ -408,18 +407,32 @@ function indexPage(url: URL, user: string): string {
 
   const up = os.uptime();
   const uptime = `${Math.floor(up / 86400)} дн ${Math.floor((up % 86400) / 3600)} ч`;
-
   const stats =
     `<div class="stats">`
-    + `<div class="stat rise" style="animation-delay:0ms"><small>Проектов</small><b data-count="${names.length}">0</b></div>`
-    + `<div class="stat rise" style="animation-delay:60ms"><small>Файлов всего</small><b data-count="${totalFiles}">0</b></div>`
-    + `<div class="stat rise" style="animation-delay:120ms"><small>Занято проектами</small><b>${humanSize(totalSize)}</b></div>`
-    + `<div class="stat rise" style="animation-delay:180ms"><small>Свободно на диске</small><b>${diskFree}</b></div>`
-    + `<div class="stat rise" style="animation-delay:240ms"><small>Аптайм сервера</small><b>${uptime}</b></div>`
-    + `</div>`;
+    + `<div class="stat rise"><small>Проектов</small><b data-count="${names.length}">0</b></div>`
+    + `<div class="stat rise"><small>Файлов всего</small><b data-count="${totalFiles}">0</b></div>`
+    + `<div class="stat rise"><small>Занято проектами</small><b>${humanSize(totalSize)}</b></div>`
+    + `<div class="stat rise"><small>Свободно на диске</small><b>${diskFree}</b></div>`
+    + `<div class="stat rise"><small>Аптайм сервера</small><b>${uptime}</b></div></div>`;
+
+  const filters = `<div class="filters rise" data-filter-controls>`
+    + `<input type="search" placeholder="Поиск проектов…" aria-label="Поиск проектов" data-filter-search>`
+    + `<select aria-label="Показывать" data-filter-kind>`
+    + `<option value="all">Все проекты</option><option value="site">Только сайты</option>`
+    + `<option value="project">Без index.html</option></select>`
+    + `<select aria-label="Период изменения" data-filter-period>`
+    + `<option value="all">За всё время</option><option value="1">За сутки</option>`
+    + `<option value="7">За 7 дней</option><option value="30">За 30 дней</option></select>`
+    + `<select aria-label="Сортировка" data-filter-sort>`
+    + `<option value="name">По названию</option><option value="modified">По дате изменения</option>`
+    + `<option value="size">По размеру</option><option value="files">По числу файлов</option></select>`
+    + `<select aria-label="Порядок" data-filter-order>`
+    + `<option value="asc">По возрастанию</option><option value="desc">По убыванию</option></select>`
+    + `<span class="filter-count" data-filter-count>${names.length}</span></div>`;
 
   const body = cards.length
-    ? cards.join("")
+    ? `<div data-filter-root>${filters}<div data-filter-list>${cards.join("")}</div>`
+      + `<div class="empty filter-empty" data-filter-empty hidden>Ничего не найдено.</div></div>`
     : `<div class="empty rise">Проектов пока нет.<br>Попроси своего ИИ-агента что-нибудь создать!</div>`;
 
   return shell("NoVate MCP — проекты",
@@ -449,27 +462,52 @@ function browsePage(rel: string, user: string): Response {
     a.isDirectory() === b.isDirectory() ? a.name.localeCompare(b.name) : a.isDirectory() ? -1 : 1,
   );
 
-  const rows = entries.map((e) => {
-    const childRel = rel ? rel + "/" + e.name : e.name;
+  const rows = entries.map((entry) => {
+    const childRel = rel ? rel + "/" + entry.name : entry.name;
     const q = encodeURIComponent(childRel);
-    if (e.isDirectory()) {
-      return `<tr><td>📁 <a href="/browse/${q}">${esc(e.name)}</a></td><td>—</td><td><span class="hint">папка</span></td></tr>`;
-    }
-    let size = "—";
-    try { size = humanSize(statSync(target + "/" + e.name).size); } catch { /* — */ }
-    return `<tr><td>📄 ${esc(e.name)}</td><td>${size}</td>`
-      + `<td><a class="btn" href="/download/${q}">Скачать</a></td></tr>`;
+    let size = 0, modified = 0;
+    try {
+      const stat = statSync(target + "/" + entry.name);
+      size = stat.size;
+      modified = stat.mtimeMs;
+    } catch { /* недоступно */ }
+    const kind = entry.isDirectory() ? "folder" : "file";
+    const nameCell = entry.isDirectory()
+      ? `📁 <a href="/browse/${q}">${esc(entry.name)}</a>`
+      : `📄 ${esc(entry.name)}`;
+    const action = entry.isDirectory()
+      ? `<span class="hint">папка</span>`
+      : `<a class="btn" href="/download/${q}">Скачать</a>`;
+    return `<tr data-filter-item data-name="${esc(entry.name.toLocaleLowerCase("ru"))}" `
+      + `data-kind="${kind}" data-size="${entry.isDirectory() ? 0 : size}" data-modified="${modified}">`
+      + `<td>${nameCell}</td><td>${entry.isDirectory() ? "—" : humanSize(size)}</td>`
+      + `<td>${esc(fmtTime(modified))}</td><td>${entry.isDirectory() ? "Папка" : "Файл"}</td>`
+      + `<td>${action}</td></tr>`;
   });
 
-  const table = rows.length
-    ? rows.join("")
-    : `<tr><td colspan="3" style="text-align:center;color:var(--muted)">пусто</td></tr>`;
+  const filters = `<div class="filters" data-filter-controls>`
+    + `<input type="search" placeholder="Поиск файлов и папок…" aria-label="Поиск файлов и папок" data-filter-search>`
+    + `<select aria-label="Тип" data-filter-kind><option value="all">Все типы</option>`
+    + `<option value="folder">Папки</option><option value="file">Файлы</option></select>`
+    + `<select aria-label="Период изменения" data-filter-period><option value="all">За всё время</option>`
+    + `<option value="1">За сутки</option><option value="7">За 7 дней</option>`
+    + `<option value="30">За 30 дней</option></select>`
+    + `<select aria-label="Сортировка" data-filter-sort><option value="name">По названию</option>`
+    + `<option value="modified">По дате изменения</option><option value="size">По размеру</option>`
+    + `<option value="kind">По типу</option></select>`
+    + `<select aria-label="Порядок" data-filter-order><option value="asc">По возрастанию</option>`
+    + `<option value="desc">По убыванию</option></select>`
+    + `<span class="filter-count" data-filter-count>${entries.length}</span></div>`;
+  const table = rows.length ? rows.join("") : "";
 
   return html(shell("NoVate MCP — файлы",
-    header("", user) + `<div class="wrap rise">`
-    + `<div class="crumb">${crumbs.join(" / ")}</div>`
-    + `<div class="panel"><table><thead><tr><th>Имя</th><th>Размер</th><th></th></tr></thead>`
-    + `<tbody>${table}</tbody></table></div></div>`));
+    header("", user) + `<div class="wrap rise" data-filter-root>`
+    + `<div class="crumb">${crumbs.join(" / ")}</div>${filters}`
+    + `<div class="panel"><table><thead><tr><th>Имя</th><th>Размер</th>`
+    + `<th>Изменён</th><th>Тип</th><th></th></tr></thead>`
+    + `<tbody data-filter-list>${table}</tbody></table>`
+    + `<div class="empty filter-empty" data-filter-empty${rows.length ? " hidden" : ""}>`
+    + `${rows.length ? "Ничего не найдено." : "Папка пуста."}</div></div></div>`));
 }
 
 // ---------- архивы проектов и проверка бэкапов ----------
@@ -484,31 +522,6 @@ async function runProcess(args: string[]): Promise<ProcessResult> {
     proc.exited,
   ]);
   return { code, stdout, stderr };
-}
-
-function streamTemporaryFile(path: string, directory: string): ReadableStream<Uint8Array> {
-  const reader = Bun.file(path).stream().getReader();
-  let cleaned = false;
-  const cleanup = (): void => {
-    if (cleaned) return;
-    cleaned = true;
-    rmSync(directory, { recursive: true, force: true });
-  };
-  return new ReadableStream<Uint8Array>({
-    async pull(controller): Promise<void> {
-      try {
-        const chunk = await reader.read();
-        if (chunk.done) { cleanup(); controller.close(); return; }
-        controller.enqueue(chunk.value);
-      } catch (err) {
-        cleanup();
-        controller.error(err);
-      }
-    },
-    async cancel(): Promise<void> {
-      try { await reader.cancel(); } finally { cleanup(); }
-    },
-  });
 }
 
 async function validateBackupArchive(upload: string, encrypted: boolean): Promise<string | null> {
@@ -667,11 +680,26 @@ function backupsPage(url: URL, user: string): string {
     + `«Восстановить» перезаписывает проекты из выбранного архива.</div></div>`);
 }
 
-function settingsPage(url: URL, user: string): string {
-  let flash = "";
-  if (url.searchParams.has("saved")) {
-    flash = toast("Сохранено: значение из панели теперь имеет приоритет над .env.", "success");
-  } else if (url.searchParams.has("reset")) {
+type GeneratedSecret = { key: string; value: string };
+
+function generatedSecretToast(secret: GeneratedSecret): string {
+  const suffix = secret.key === "MCP_TOKEN"
+    ? " MCP-сервис автоматически применит его в течение нескольких секунд."
+    : secret.key === "SESSION_SECRET"
+      ? " Текущая сессия завершится после перехода на другую страницу."
+      : " Сохраните значение: оно понадобится для расшифровки бэкапов.";
+  return `<div class="toast-stack"><div class="toast toast-success" data-toast data-toast-persistent role="status">`
+    + `<span><b>${esc(secret.key)} создан.</b>${esc(suffix)}`
+    + `<code class="generated-secret" data-generated-secret>${esc(secret.value)}</code>`
+    + `<button class="btn secret-copy" type="button" data-copy-secret>Копировать</button></span>`
+    + `<button class="toast-close" type="button" aria-label="Закрыть">×</button></div></div>`;
+}
+
+function settingsPage(url: URL, user: string, generated?: GeneratedSecret): string {
+  let flash = generated ? generatedSecretToast(generated) : "";
+  if (!generated && url.searchParams.has("saved")) {
+    flash = toast("Настройка сохранена.", "success");
+  } else if (!generated && url.searchParams.has("reset")) {
     flash = toast("Переопределение сброшено — снова действует значение из .env.", "success");
   }
 
@@ -679,42 +707,49 @@ function settingsPage(url: URL, user: string): string {
   for (const item of EDITABLE) {
     const effective = settings.get(item.key);
     const src = settings.source(item.key);
-    const shown = item.secret ? mask(effective) : esc(effective || "(не задан)");
+    const secret = item.mode !== "text";
+    const shown = secret ? mask(effective) : esc(effective || "(не задан)");
     const badge = src === "panel"
       ? `<span class="badge panel">панель</span>`
       : `<span class="badge env">.env</span>`;
     const resetBtn = src === "panel"
       ? `<button class="btn gray" form="reset-${esc(item.key)}">По умолчанию</button>`
       : "";
+
+    let editor: string;
+    if (item.mode === "generated-secret") {
+      editor = `<form class="inline" method="post" action="/settings">`
+        + `<input type="hidden" name="key" value="${esc(item.key)}">`
+        + `<button class="btn" type="submit" name="action" value="generate">Сгенерировать новый</button>`
+        + `${resetBtn}</form>`;
+    } else {
+      const inputType = item.mode === "external-secret" ? "password" : "text";
+      const value = item.mode === "text" ? ` value="${esc(effective)}"` : "";
+      const placeholder = item.mode === "external-secret"
+        ? "Вставьте новый секрет"
+        : "Отредактируйте текущее значение";
+      editor = `<form class="inline" method="post" action="/settings">`
+        + `<input type="hidden" name="key" value="${esc(item.key)}">`
+        + `<input type="${inputType}" name="value"${value} placeholder="${placeholder}">`
+        + `<button class="btn" type="submit" name="action" value="save">Сохранить</button>${resetBtn}</form>`;
+    }
+
     rows.push(
       `<tr><td style="width:210px"><b>${esc(item.key)}</b>`
       + `<div class="hint">${esc(item.label)}</div></td>`
-      + `<td><span class="val">${shown}</span> ${badge}`
-      + `<form class="inline" method="post" action="/settings">`
-      + `<input type="hidden" name="key" value="${esc(item.key)}">`
-      + `<input type="text" name="value" placeholder="Новое значение (пусто — не менять)">`
-      + `<button class="btn" type="submit" name="action" value="save">Сохранить</button>${resetBtn}</form>`
+      + `<td><span class="val">${shown}</span> ${badge}${editor}`
       + `<form id="reset-${esc(item.key)}" method="post" action="/settings">`
       + `<input type="hidden" name="key" value="${esc(item.key)}">`
       + `<input type="hidden" name="action" value="reset"></form>`
       + `<div class="hint">${esc(item.hint)}</div></td></tr>`,
     );
   }
-  for (const item of INFO_ONLY) {
-    const effective = settings.get(item.key);
-    rows.push(
-      `<tr><td style="width:210px"><b>${esc(item.key)}</b>`
-      + `<div class="hint">${esc(item.label)}</div></td>`
-      + `<td><span class="val">${esc(effective || "(не задан)")}</span> <span class="badge env">.env</span>`
-      + `<div class="hint">${esc(item.hint)}</div></td></tr>`,
-    );
-  }
 
   const noteBlock =
-    `<div class="note rise">Приоритет: <b>переопределение в панели</b> &gt; <b>.env</b> (значения по умолчанию). `
-    + `Кнопка «По умолчанию» удаляет переопределение. `
-    + `Изменение MCP_TOKEN вступает в силу после <span class="val">docker compose restart mcp</span>. `
-    + `Настройки Telegram и бэкапов применяются в течение минуты, без перезапуска.</div>`;
+    `<div class="note rise">Обычные значения показаны прямо в полях: их можно дополнять, редактировать и очищать. `
+    + `Локальные секреты создаются кнопкой «Сгенерировать новый» и показываются один раз для копирования. `
+    + `TG_CLIENT_SECRET и TG_BOT_TOKEN выдаёт Telegram — их можно только заменить вручную. `
+    + `Кнопка «По умолчанию» удаляет переопределение и возвращает значение из .env.</div>`;
 
   return shell("NoVate MCP — настройки",
     header("settings", user) + flash + `<div class="wrap">${noteBlock}`
@@ -851,26 +886,28 @@ async function route(req: Request): Promise<Response> {
       return redirect("/");
     }
 
-    const tempDir = mkdtempSync(join(os.tmpdir(), "novate-project-download-"));
-    const archive = join(tempDir, "project.tar.gz");
     try {
-      const packed = await runProcess(["tar", "-czf", archive, "-C", DATA_DIR, "--", name]);
-      if (packed.code !== 0) {
-        console.error("Не удалось архивировать проект:", packed.stderr);
-        rmSync(tempDir, { recursive: true, force: true });
-        return redirect("/?error=project-archive");
-      }
+      // tar пишет gzip сразу в HTTP-ответ: браузер начинает скачивание без ожидания
+      // создания полного архива и без временного файла на диске.
+      const packed = Bun.spawn(["tar", "-czf", "-", "-C", DATA_DIR, "--", name], {
+        stdout: "pipe", stderr: "pipe",
+      });
+      const stderr = new Response(packed.stderr).text();
+      void Promise.all([packed.exited, stderr]).then(([code, message]) => {
+        if (code !== 0) console.error("Потоковая архивация проекта завершилась с ошибкой:", message);
+      });
       const downloadName = name + ".tar.gz";
-      return new Response(streamTemporaryFile(archive, tempDir), {
+      return new Response(packed.stdout, {
         headers: {
           "Content-Type": "application/gzip",
           "Content-Disposition":
             `attachment; filename="${downloadName.replace(/[^\x20-\x7E]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
         },
       });
     } catch (err) {
-      rmSync(tempDir, { recursive: true, force: true });
-      console.error("Не удалось подготовить архив проекта:", err);
+      console.error("Не удалось начать потоковую архивацию проекта:", err);
       return redirect("/?error=project-archive");
     }
   }
@@ -996,18 +1033,28 @@ async function route(req: Request): Promise<Response> {
     const form = await req.formData();
     const key = String(form.get("key") || "");
     const action = String(form.get("action") || "");
-    if (!EDITABLE.some((e) => e.key === key)) return redirect("/settings");
+    const item = EDITABLE.find((entry) => entry.key === key);
+    if (!item) return redirect("/settings");
     if (action === "reset") {
       settings.clearOverride(key);
       tgNotify("⚙️ Настройка " + key + " сброшена к .env (пользователь " + session.name + ")");
       return redirect("/settings?reset=1");
     }
-    const value = String(form.get("value") || "").trim();
-    if (value) {
+    if (action === "generate" && item.mode === "generated-secret") {
+      const value = randomBytes(32).toString("hex");
       settings.setOverride(key, value);
-      tgNotify("⚙️ Настройка " + key + " изменена из панели (пользователь " + session.name + ")");
+      tgNotify("⚙️ Сгенерировано новое значение " + key + " (пользователь " + session.name + ")");
+      return html(settingsPage(url, session.name, { key, value }));
     }
-    return redirect("/settings?saved=1");
+    if (action === "save" && item.mode !== "generated-secret") {
+      const value = String(form.get("value") || "").trim();
+      if (item.mode === "text" || value) {
+        settings.setOverride(key, value);
+        tgNotify("⚙️ Настройка " + key + " изменена из панели (пользователь " + session.name + ")");
+      }
+      return redirect("/settings?saved=1");
+    }
+    return redirect("/settings");
   }
 
   return redirect("/");

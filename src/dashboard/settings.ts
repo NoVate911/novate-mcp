@@ -38,15 +38,15 @@ export function readOverrides(): Record<string, string> {
 
 /** Эффективное значение: переопределение панели, иначе .env, иначе дефолт. */
 export function get(key: string): string {
-  const ov = readOverrides()[key];
-  if (typeof ov === "string" && ov.trim()) return ov.trim();
+  const overrides = readOverrides();
+  if (key in overrides && typeof overrides[key] === "string") return overrides[key].trim();
   return process.env[key] ?? DEFAULTS[key] ?? "";
 }
 
 /** Откуда взято текущее значение. */
 export function source(key: string): "panel" | "env" {
-  const ov = readOverrides()[key];
-  return typeof ov === "string" && ov.trim() ? "panel" : "env";
+  const overrides = readOverrides();
+  return key in overrides && typeof overrides[key] === "string" ? "panel" : "env";
 }
 
 export function setOverride(key: string, value: string): void {

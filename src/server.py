@@ -2,6 +2,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -13,8 +15,8 @@ import settings
 
 # ============================================================
 # Настройки: .env — значения по умолчанию; переопределения из
-# панели (overrides.json) имеют приоритет. Читаются при старте
-# контейнера, поэтому после смены в панели: docker compose restart mcp
+# панели (overrides.json) имеют приоритет. MCP_TOKEN читается при старте,
+# а фоновый наблюдатель автоматически перезапускает процесс при его смене.
 # ============================================================
 
 # Секретный токен доступа (обязателен, генерируется install.sh)
@@ -354,5 +356,16 @@ def make_backup() -> str:
             "и в Telegram в течение минуты.")
 
 
+def watch_mcp_token() -> None:
+    """Перезапускает MCP-процесс, когда панель сгенерировала новый токен."""
+    while True:
+        time.sleep(2)
+        token = settings.get("MCP_TOKEN")
+        if token and token != MCP_TOKEN:
+            print("MCP_TOKEN изменён — перезапуск MCP-процесса", flush=True)
+            os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
 if __name__ == "__main__":
+    threading.Thread(target=watch_mcp_token, daemon=True).start()
     mcp.run(transport="http", host="0.0.0.0", port=8000, path="/mcp/")
