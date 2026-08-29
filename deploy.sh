@@ -11,7 +11,7 @@ fi
 TIMEOUT="${TIMEOUT:-600}"
 LOCK_DIR="$BASE_DIR/.deploy.lock"
 STATE_DIR="$BASE_DIR/.deploy"
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+STAMP="$(date -u +%Y%m%dt%H%M%Sz)"
 ENV_FILE="$BASE_DIR/.env"
 ENV_BACKUP="$STATE_DIR/env-$STAMP"
 ROLLBACK_FILE="$STATE_DIR/rollback-$STAMP.yml"
