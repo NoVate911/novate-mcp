@@ -392,8 +392,11 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   `bun run typecheck` и `bun run build` из `src/dashboard`.
 - Security workflow использует Gitleaks и Trivy; не ослабляй HIGH/CRITICAL
   enforcement без документированного исключения.
-- MCP и dashboard healthchecks проверяют локальные порты. Backup healthcheck
+- MCP и dashboard healthchecks проверяют локальные порты. MCP start-period —
+  минимум 5 минут из-за возможного долгого S3 startup merge. Backup healthcheck
   читает `/backups/.backup-heartbeat.json`; heartbeat обновляется каждый цикл.
+- Никогда не блокируй запуск Caddy условием `service_healthy`: сбой или прогрев
+  одного backend не должен отключать панель, публичные проекты и остальные маршруты.
 - Просроченным считается бэкап старше `BACKUP_STALE_AFTER_HOURS`, а если
   переменная пуста — старше max(2 интервала, интервал + 1 час). Telegram-alert
   отправляется один раз до следующей успешной копии.

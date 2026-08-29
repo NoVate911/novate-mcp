@@ -79,10 +79,8 @@ services:
       timeout: 5s
       retries: 3
     depends_on:
-      mcp:
-        condition: service_healthy
-      dashboard:
-        condition: service_healthy
+      - mcp
+      - dashboard
 
 volumes:
   storage_state:
