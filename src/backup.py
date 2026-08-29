@@ -40,6 +40,8 @@ TRIGGER_FILE = CONFIG_DIR / "backup-now"
 MCP_TRIGGER_FILE = DATA_DIR / ".backup-now"
 # Панель пишет сюда ИМЯ архива кнопкой «Восстановить»
 RESTORE_FILE = CONFIG_DIR / "restore-now"
+# После восстановления MCP синхронизирует изменившуюся локальную копию с S3.
+S3_SYNC_TRIGGER = DATA_DIR / ".s3-sync-needed"
 # Статус последнего бэкапа для страницы «Бэкапы» в панели
 STATE_FILE = BACKUP_DIR / "last-backup.json"
 
@@ -326,6 +328,8 @@ def do_restore(name: str) -> None:
                 tar.extract(member, DATA_DIR, filter="data")
                 restored += 1
         log(f"восстановлено объектов: {restored}")
+        if os.environ.get("S3_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+            S3_SYNC_TRIGGER.write_text(str(time.time_ns()), encoding="utf-8")
         tg_text(
             "✅ <b>Восстановление завершено</b>\n\n"
             f"<b>Архив:</b> <code>{html.escape(name)}</code>\n"

@@ -38,6 +38,8 @@
 - `src/server.py` — MCP-сервер: инструменты, Bearer-авторизация, `safe_path`.
 - `src/settings.py` — настройки (Python): overrides.json > .env > дефолты.
   Используется и mcp, и backup.
+- `src/storage.py` — storage-слой MCP: LocalStorage/S3Storage, boto3,
+  delta-sync shell-команд, безопасный startup merge и исключения.
 - `src/backup.py` — сервис бэкапов: расписание/триггер, tar.gz, AES-256
   (openssl CLI), восстановление, Telegram Bot API, статус в last-backup.json.
 - `src/dashboard/index.ts` — панель: роутер, вход через Telegram OIDC
@@ -58,8 +60,8 @@
 Python-часть (Python 3.12+):
 
 ```bash
-pip install fastmcp
-MCP_TOKEN=dev-token python src/server.py          # http://127.0.0.1:8000/mcp/
+pip install fastmcp boto3
+MCP_TOKEN=dev-token S3_ENABLED=false python src/server.py          # http://127.0.0.1:8000/mcp/
 ```
 
 Панель (нужен Bun 1.x):
@@ -102,7 +104,10 @@ docker build --target backup -t novate-mcp:backup .
 bash -n install.sh
 
 # Компиляция Python-кода
-python3 -m py_compile src/server.py src/settings.py src/backup.py
+python3 -m py_compile src/server.py src/settings.py src/storage.py src/backup.py
+
+# Storage + MCP integration tests (реальный S3 не нужен — используется FakeS3)
+PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 # Проверка TS (если установлен bun) — сборка без запуска
 cd src/dashboard && bun build ./index.ts --outdir /tmp/dashcheck --target bun && cd -
@@ -123,6 +128,27 @@ assert settings.get("MCP_TOKEN") == "env-token"
 print("settings OK")
 EOF
 ```
+
+## S3 storage
+
+- `/data` всегда остаётся обычной POSIX FS на bind mount `PROJECTS_DIR`.
+  S3/FUSE/s3fs/rclone mount запрещены; S3 — только постоянная копия через API.
+- Все детали S3 находятся в `src/storage.py`; публичные MCP tool names и параметры
+  не меняются. `S3_ENABLED=false` обязан сохранять прежнее локальное поведение.
+- S3-параметры startup-only и читаются напрямую из `.env`, не из overrides.json.
+  Dashboard показывает только read-only статус; secret key никогда не выводится,
+  access key маскируется. Изменение требует `docker compose up -d`.
+- `write_file` синхронизирует один файл; delete — object/prefix; move — Copy+Delete.
+  `run_command` и `run_background` сравнивают metadata snapshot и передают только delta.
+- `/tmp/mcp-tasks`, `node_modules`, `.git`, `.cache`, tmp, логи, pycache и служебные
+  триггеры не синхронизируются. Пользовательские исключения добавляет `S3_EXCLUDE`.
+- Startup merge не удаляет и не перезаписывает существующие локальные файлы:
+  скачивает отсутствующие из S3, загружает локальные и при конфликте выбирает
+  локальную версию (это восстанавливает S3 после ранее неудачного PUT).
+- Любая обязательная ошибка S3 должна быть явно возвращена; secret key не логировать.
+  Boto3 dependency есть только в MCP image. Backup остаётся stdlib-only.
+- После restore backup пишет `/data/.s3-sync-needed`; MCP watcher синхронизирует delta.
+  S3 и tar.gz backup — независимые механизмы.
 
 ## Code style
 
@@ -160,8 +186,9 @@ EOF
 4. `src/dashboard/index.ts` — список EDITABLE (или INFO_ONLY).
 5. `README.md` — таблица настроек.
 
-Исключение: чисто инфра-переменные окружения, которые читает рантайм,
-а не код (пример — `TZ`): только `.env.example` и README.
+Исключение: чисто инфра/startup-переменные окружения, которые не поддерживают
+runtime override (`TZ`, `S3_*`): `.env.example`, README и read-only статус панели.
+S3 credentials намеренно не добавляются в EDITABLE или overrides.json.
 
 ## Telegram OIDC: устройство и отладка
 
@@ -338,5 +365,8 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   Все динамические значения обязательно экранируй через `tgEsc()` / `html.escape()`.
 - UI использует Manrope, а технические значения — JetBrains Mono через Google Fonts
   с системными fallback-шрифтами. Все form controls наследуют основной шрифт.
+- S3_ENABLED=true требует S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET и
+  S3_REGION. Endpoint для Reg.Ru бери из панели «Хранилище S3 → Ключи доступа»;
+  обычно это https://s3.regru.cloud, но не хардкодь его в runtime.
 - GHCR-теги сервисов: `mcp-latest` / `dashboard-latest` / `backup-latest` —
   не перепутай в docker-compose.yml.

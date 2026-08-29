@@ -10,7 +10,26 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: pip install fastmcp
+      - name: Python tests
+        run: PYTHONPATH=src python -m unittest discover -s tests -v
+      - name: Static checks
+        run: |
+          python -m py_compile src/server.py src/settings.py src/storage.py src/backup.py
+          bash -n install.sh
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:

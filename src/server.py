@@ -12,6 +12,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 
 import settings
+from storage import Snapshot, StorageError, create_storage
 
 # ============================================================
 # Настройки: .env — значения по умолчанию; переопределения из
@@ -27,6 +28,9 @@ if not MCP_TOKEN:
 # Папка ВНУТРИ контейнера, в которую смонтирована папка PROJECTS_DIR с хоста.
 # Все инструменты работают только внутри неё.
 DATA_DIR = Path(os.environ.get("MCP_DATA_DIR", "/data")).resolve()
+# При S3_ENABLED=true здесь же валидируются credentials/bucket и выполняется
+# безопасное объединение S3 с локальной рабочей копией.
+STORAGE = create_storage(DATA_DIR)
 
 # Публичный домен сервера (используется в описаниях инструментов)
 DOMAIN = settings.get("DOMAIN")
@@ -63,6 +67,7 @@ def run_command(command: str, timeout: int = 120) -> str:
         timeout: Лимит времени в секундах (по умолчанию 120, максимум 600).
     """
     timeout = min(max(timeout, 1), 600)
+    before = STORAGE.snapshot()
     try:
         result = subprocess.run(
             command,
@@ -77,9 +82,15 @@ def run_command(command: str, timeout: int = 120) -> str:
             output += f"\n\nstdout:\n{result.stdout[-4000:]}"
         if result.stderr:
             output += f"\n\nstderr:\n{result.stderr[-4000:]}"
-        return output
     except subprocess.TimeoutExpired:
-        return f"$ {command}\nКоманда превысила лимит {timeout} секунд"
+        output = f"$ {command}\nКоманда превысила лимит {timeout} секунд"
+    try:
+        synced = STORAGE.sync_changes(before)
+        if STORAGE.enabled:
+            output += f"\n\nS3: {synced.describe()}"
+    except StorageError as exc:
+        output += f"\n\nОШИБКА СОХРАНЕНИЯ В S3: {exc}. Изменения остались в /data; повторите синхронизацию."
+    return output
 
 
 @mcp.tool
@@ -93,6 +104,12 @@ def write_file(path: str, content: str) -> str:
     target = safe_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+    try:
+        STORAGE.put_file(target)
+    except StorageError as exc:
+        raise RuntimeError(
+            f"Файл изменён в /data, но не сохранён в S3: {exc}"
+        ) from exc
     return f"Записано {len(content)} символов в {target}"
 
 
@@ -104,6 +121,11 @@ def read_file(path: str) -> str:
         path: Путь относительно папки проектов (например, "landing/index.html").
     """
     target = safe_path(path)
+    if not target.is_file():
+        try:
+            STORAGE.fetch_if_missing(target.relative_to(DATA_DIR).as_posix())
+        except StorageError as exc:
+            raise RuntimeError(f"Не удалось получить файл из S3: {exc}") from exc
     if not target.is_file():
         return f"Файл не найден: {path}"
     text = target.read_text(encoding="utf-8", errors="replace")
@@ -180,11 +202,20 @@ def delete_file(path: str) -> str:
         return "Нельзя удалить корневую папку проектов"
     if not target.exists():
         return f"Не найдено: {path}"
-    if target.is_dir():
-        shutil.rmtree(target)
-        return f"Удалена папка с содержимым: {path}"
-    target.unlink()
-    return f"Удалён файл: {path}"
+    is_directory = target.is_dir()
+    rel = target.relative_to(DATA_DIR).as_posix()
+    trash = DATA_DIR / f".novate-delete-{uuid.uuid4().hex}"
+    shutil.move(str(target), str(trash))
+    try:
+        STORAGE.delete_path(rel, is_directory)
+    except StorageError as exc:
+        shutil.move(str(trash), str(target))
+        raise RuntimeError(f"Удаление отменено: не удалось синхронизировать S3: {exc}") from exc
+    if trash.is_dir():
+        shutil.rmtree(trash)
+    else:
+        trash.unlink(missing_ok=True)
+    return f"Удалена папка с содержимым: {path}" if is_directory else f"Удалён файл: {path}"
 
 
 @mcp.tool
@@ -203,8 +234,17 @@ def move_file(src: str, dst: str) -> str:
         return f"Не найдено: {src}"
     if dest.exists():
         return f"Уже существует: {dst}"
+    is_directory = source.is_dir()
+    src_rel = source.relative_to(DATA_DIR).as_posix()
+    dst_rel = dest.relative_to(DATA_DIR).as_posix()
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(dest))
+    try:
+        STORAGE.move_path(src_rel, dst_rel, is_directory)
+    except StorageError as exc:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(dest), str(source))
+        raise RuntimeError(f"Перемещение отменено: не удалось синхронизировать S3: {exc}") from exc
     return f"Перемещено: {src} -> {dst}"
 
 
@@ -282,7 +322,21 @@ def server_stats() -> str:
 # чтобы не публиковаться на /projects/ и не попадать в бэкапы.
 # Перезапуск контейнера очищает задачи и логи.
 TASKS_DIR = Path("/tmp/mcp-tasks")
-_tasks: dict = {}
+_tasks: dict[str, subprocess.Popen] = {}
+_task_sync: dict[str, str] = {}
+
+
+def _finish_background(task_id: str, proc: subprocess.Popen, before: Snapshot, log_file: Path) -> None:
+    proc.wait()
+    _task_sync[task_id] = "синхронизация S3"
+    try:
+        result = STORAGE.sync_changes(before)
+        _task_sync[task_id] = "готово" if not STORAGE.enabled else "S3: " + result.describe()
+    except StorageError as exc:
+        message = f"ОШИБКА СОХРАНЕНИЯ В S3: {exc}. Изменения остались в /data."
+        _task_sync[task_id] = message
+        with open(log_file, "a", encoding="utf-8") as stream:
+            stream.write("\n" + message + "\n")
 
 
 @mcp.tool
@@ -298,6 +352,7 @@ def run_background(command: str) -> str:
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
     task_id = uuid.uuid4().hex[:8]
     log_file = TASKS_DIR / f"{task_id}.log"
+    before = STORAGE.snapshot()
     with open(log_file, "w", encoding="utf-8") as f:
         proc = subprocess.Popen(
             command, shell=True, cwd=DATA_DIR,
@@ -305,6 +360,10 @@ def run_background(command: str) -> str:
             start_new_session=True,
         )
     _tasks[task_id] = proc
+    _task_sync[task_id] = "ожидание завершения"
+    threading.Thread(
+        target=_finish_background, args=(task_id, proc, before, log_file), daemon=True,
+    ).start()
     return (
         "Задача " + task_id + " запущена (PID " + str(proc.pid) + ").\n"
         "Проверка статуса: poll_task(\"" + task_id + "\")"
@@ -326,6 +385,8 @@ def poll_task(task_id: str, tail: int = 40) -> str:
     if proc is not None:
         rc = proc.poll()
         status = "выполняется" if rc is None else f"завершена с кодом {rc}"
+        if rc is not None and task_id in _task_sync:
+            status += f"; {_task_sync[task_id]}"
     elif log_file.exists():
         status = "процесс не найден (контейнер перезапускался?) — вот лог"
     else:
@@ -356,6 +417,30 @@ def make_backup() -> str:
             "и в Telegram в течение минуты.")
 
 
+S3_SYNC_TRIGGER = DATA_DIR / ".s3-sync-needed"
+
+
+def watch_external_sync() -> None:
+    """Синхронизирует изменения, которые backup восстановил прямо в /data."""
+    before = STORAGE.snapshot()
+    last_seen = 0
+    while True:
+        time.sleep(2)
+        try:
+            current = S3_SYNC_TRIGGER.stat().st_mtime_ns
+        except OSError:
+            continue
+        if current <= last_seen:
+            continue
+        last_seen = current
+        try:
+            result = STORAGE.sync_changes(before)
+            before = STORAGE.snapshot()
+            print(f"[storage] external sync: {result.describe()}", flush=True)
+        except StorageError as exc:
+            print(f"[storage] external sync failed: {exc}", flush=True)
+
+
 def watch_mcp_token() -> None:
     """Перезапускает MCP-процесс, когда панель сгенерировала новый токен."""
     while True:
@@ -368,4 +453,6 @@ def watch_mcp_token() -> None:
 
 if __name__ == "__main__":
     threading.Thread(target=watch_mcp_token, daemon=True).start()
+    if STORAGE.enabled:
+        threading.Thread(target=watch_external_sync, daemon=True).start()
     mcp.run(transport="http", host="0.0.0.0", port=8000, path="/mcp/")

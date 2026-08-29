@@ -118,6 +118,14 @@ else
   grep -q '^TG_CHAT_ID=' .env            || echo 'TG_CHAT_ID=' >> .env
   grep -q '^BACKUP_INTERVAL_HOURS=' .env || echo 'BACKUP_INTERVAL_HOURS=24' >> .env
   grep -q '^BACKUP_KEEP=' .env           || echo 'BACKUP_KEEP=7' >> .env
+  grep -q '^S3_ENABLED=' .env           || echo 'S3_ENABLED=false' >> .env
+  grep -q '^S3_ENDPOINT=' .env          || echo 'S3_ENDPOINT=' >> .env
+  grep -q '^S3_ACCESS_KEY=' .env        || echo 'S3_ACCESS_KEY=' >> .env
+  grep -q '^S3_SECRET_KEY=' .env        || echo 'S3_SECRET_KEY=' >> .env
+  grep -q '^S3_BUCKET=' .env            || echo 'S3_BUCKET=' >> .env
+  grep -q '^S3_REGION=' .env            || echo 'S3_REGION=' >> .env
+  grep -q '^S3_PREFIX=' .env            || echo 'S3_PREFIX=projects/' >> .env
+  grep -q '^S3_EXCLUDE=' .env           || echo 'S3_EXCLUDE=' >> .env
 fi
 grep -q '^MCP_TOKEN=.' .env || { echo "ОШИБКА: в .env пустой MCP_TOKEN"; exit 1; }
 if ! grep -q '^SESSION_SECRET=.' .env; then

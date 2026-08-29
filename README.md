@@ -21,6 +21,7 @@
 - 🤖 **11 инструментов для MCP-клиента** — файлы (`read_file`, `write_file`, `list_files`, `search_in_files`, `delete_file`, `move_file`), `run_command`, фоновые задачи (`run_background` + `poll_task`), `server_stats`, `make_backup`
 - 📊 **Панель «NoVate MCP»** — статистика сервера, проекты, просмотр файлов и скачивание проектов архивом
 - 🔑 **Вход в панель через Telegram (OpenID Connect)** — без паролей и токенов: доступ по списку Telegram ID
+- ☁️ **Опциональное Reg.Ru Cloud S3** — постоянное хранение проектов без FUSE/mount; `/data` остаётся обычной POSIX FS
 - 🗄 **Бэкапы в Telegram** — по расписанию или кнопкой, загрузка локальных бэкапов с проверкой, шифрование AES-256, восстановление в один клик
 - 🔔 **Telegram-алерты** — входы в панель, отклонённые попытки, смена настроек, сбои бэкапов
 - 🎨 **Современный минималистичный UI на TypeScript (Bun)** — CSS-анимации, тост-уведомления, акцент `#1ED895`, минимальная нагрузка на систему
@@ -62,6 +63,8 @@ GitHub Actions собирает **три образа** из одного Docker
 |---|---|
 | `src/server.py` | MCP-сервер: инструменты, Bearer-авторизация, защита путей |
 | `src/settings.py` | Настройки: переопределения панели → `.env` → дефолты |
+| `src/storage.py` | Storage-слой: локальный backend, S3 backend, delta-sync и startup merge |
+| `tests/test_storage.py` | Fake-S3 и интеграционные тесты файловых MCP-инструментов |
 | `src/backup.py` | Сервис бэкапов: расписание, tar.gz, AES-256, восстановление, Telegram |
 | `src/dashboard/index.ts` | Панель (Bun): роутер, вход через Telegram OIDC, проекты, файлы, бэкапы, настройки |
 | `src/dashboard/settings.ts` | TS-порт логики настроек |
@@ -175,6 +178,108 @@ curl -i https://ДОМЕН/mcp/      # ожидается: 401 Unauthorized
 Панель монтирует проекты в режиме **только чтение**: изменять файлы
 может только MCP.
 
+## ☁️ S3 Storage
+
+S3 — **опциональное постоянное хранилище**, а не файловая система контейнера.
+NoVate MCP не использует `s3fs`, `rclone mount`, FUSE или другие S3 mounts:
+
+```text
+Agent
+  ↓
+MCP tools / shell
+  ↓
+/data — обычная локальная POSIX рабочая копия
+  ↓
+Storage
+  ├── LocalStorage → PROJECTS_DIR
+  └── S3Storage    → S3-compatible API → Reg.Ru Cloud S3
+```
+
+### Настройка Reg.Ru
+
+1. В панели **Рег.облака** активируй «Хранилище S3» и создай один bucket.
+2. В разделе **Хранилище S3 → Ключи доступа** создай/скопируй `Access key`,
+   `Secret access key` и актуальный `S3 API Endpoint`.
+3. Укажи endpoint именно из панели. Для Reg.Ru обычно это
+   `https://s3.regru.cloud`; не заменяй его URL публичного bucket.
+4. Укажи регион bucket. Если панель показывает пустой регион, уточни актуальное
+   значение у поддержки Reg.Ru: NoVate требует явный `S3_REGION` для SigV4.
+5. Заполни `.env` и пересоздай MCP-контейнер:
+
+```dotenv
+S3_ENABLED=true
+S3_ENDPOINT=https://s3.regru.cloud
+S3_ACCESS_KEY=<ACCESS_KEY>
+S3_SECRET_KEY=<SECRET_KEY>
+S3_BUCKET=<BUCKET>
+S3_REGION=<REGION>
+S3_PREFIX=projects/
+S3_EXCLUDE=
+```
+
+Credentials никогда не коммитятся. `S3_SECRET_KEY` не показывается в панели;
+`S3_ACCESS_KEY` маскируется. Все S3-параметры меняются только через `.env`, потому
+что при старте MCP проверяет конфигурацию, bucket, List/Put/Delete и выполняет
+восстановление. После изменения используй `docker compose up -d mcp dashboard backup`.
+
+Чтобы вернуться к прежнему режиму, установи `S3_ENABLED=false` и пересоздай
+контейнеры. `PROJECTS_DIR` остаётся локальной рабочей директорией и в обоих режимах.
+
+### Синхронизация
+
+- `write_file` загружает только созданный или изменённый файл (`PutObject`).
+- `delete_file` удаляет файл или весь object prefix; локальное удаление откатывается,
+  если обязательное удаление в S3 завершилось ошибкой.
+- `move_file` использует `CopyObject`, затем `DeleteObject`; для папки — по всем
+  объектам prefix. При ошибке локальное перемещение откатывается.
+- `run_command` снимает metadata-снимок до команды и после неё загружает только
+  новые/изменённые файлы и удаляет исчезнувшие объекты. `/data` остаётся `cwd`.
+- `run_background` делает то же после завершения процесса; `poll_task` показывает
+  состояние S3-sync, а `/tmp/mcp-tasks` никогда не попадает в S3.
+- При S3-ошибке операция не сообщает ложный успех: возвращается явная ошибка,
+  локальная копия остаётся в `/data`, а boto3 выполняет ограниченные retry.
+
+Структура объектов при `S3_PREFIX=projects/`:
+
+```text
+bucket/
+└── projects/
+    ├── landing/index.html
+    └── landing/src/app.js
+```
+
+Directory marker objects не создаются. При старте выполняется **безопасный merge**:
+S3-файлы, отсутствующие локально, скачиваются; локальные файлы, отсутствующие в S3,
+загружаются; при совпадении локальный файл сохраняется и становится приоритетной
+версией в S3. Ничего локального не удаляется, поэтому существующий `PROJECTS_DIR`
+не теряется. `read_file` дополнительно может восстановить
+отсутствующий локальный файл из S3. Внешние изменения S3 после старта автоматически
+не подтягиваются — для этого пересоздай MCP-контейнер.
+
+Всегда исключаются `node_modules`, `.git`, `.cache`, `tmp`, `__pycache__`, `*.pyc`,
+`*.log` и служебные файлы NoVate. `S3_EXCLUDE` добавляет собственные имена или glob-
+паттерны через запятую. Встроенные исключения отключить нельзя, чтобы `npm install`
+не загружал сотни мегабайт зависимостей.
+
+### S3 и резервные копии
+
+S3 storage и бэкапы независимы. Backup по-прежнему архивирует текущую `/data` в
+`tar.gz[.enc]`, хранит архивы в `/backups` и может отправлять их в Telegram.
+После восстановления архива backup создаёт служебный триггер, и MCP переносит
+восстановленные изменения в S3. Сами архивы в S3 bucket проектов не загружаются.
+
+### Диагностика
+
+```bash
+docker compose logs -f mcp
+docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
+```
+
+При `S3_ENABLED=true` запуск останавливается сразу, если отсутствует обязательная
+переменная, endpoint некорректен, bucket недоступен или нет List/Put/Delete прав.
+Сообщения не содержат secret key. Проверь endpoint, region, имя bucket, права ключа,
+сетевой доступ и затем выполни `docker compose up -d mcp`.
+
 ## 🗄 Бэкапы
 
 Фоновый контейнер `backup` раз в `BACKUP_INTERVAL_HOURS` часов
@@ -220,6 +325,10 @@ curl -i https://ДОМЕН/mcp/      # ожидается: 401 Unauthorized
 | `BACKUP_INTERVAL_HOURS` | Интервал бэкапов, часов | ✅ в течение минуты |
 | `BACKUP_KEEP` | Сколько архивов хранить локально | ✅ в течение минуты |
 | `BACKUP_PASSWORD` | Пароль шифрования архивов (AES-256) | ✅ генерация и копирование, в течение минуты |
+| `S3_ENABLED` | Включение постоянного S3-хранилища | 👉 только `.env`, пересоздание контейнеров |
+| `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_PREFIX` | Подключение и prefix S3 | 👁 статус в панели; изменение только `.env` |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Credentials S3 | 🔒 access key маскируется, secret не раскрывается; только `.env` |
+| `S3_EXCLUDE` | Дополнительные исключения синхронизации | 👉 только `.env` |
 | `DOMAIN` | Домен сервера и callback Telegram | 👉 только `.env`, затем `install.sh` |
 | `TZ` | Часовой пояс контейнеров (время в панели, логи, бэкапы) | 👉 только `.env`, затем `docker compose up -d` |
 
@@ -281,7 +390,7 @@ docker compose down                  # остановить всё
 
 ## 🧰 Стек
 
-**FastMCP** (Python) · **Bun + TypeScript** (панель) · **Python stdlib** (бэкапы) · **Docker Compose** · **Caddy** · **Telegram OIDC + Bot API** · **GitHub Actions** · **GHCR**
+**FastMCP + boto3** (Python) · **Bun + TypeScript** (панель) · **Python stdlib** (бэкапы) · **Docker Compose** · **Caddy** · **Telegram OIDC + Bot API** · **GitHub Actions** · **GHCR**
 
 ---
 

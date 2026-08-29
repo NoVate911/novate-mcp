@@ -52,7 +52,7 @@ const TG_ISSUER = "https://oauth.telegram.org";
 
 // Редактируемые в панели настройки
 type SettingMode = "text" | "external-secret" | "generated-secret";
-type SettingSection = "telegram" | "access" | "backups";
+type SettingSection = "telegram" | "access" | "backups" | "storage";
 type EditableSetting = {
   key: string; label: string; hint: string; mode: SettingMode; section: SettingSection;
 };
@@ -61,6 +61,7 @@ const SETTING_SECTIONS: Array<{ id: SettingSection; label: string; description: 
   { id: "telegram", label: "Telegram", description: "Вход через Telegram и отправка бэкапов в чат." },
   { id: "access", label: "Доступ и безопасность", description: "Сессии панели и токен MCP-доступа." },
   { id: "backups", label: "Бэкапы", description: "Расписание, хранение и шифрование резервных копий." },
+  { id: "storage", label: "S3-хранилище", description: "Состояние постоянного хранилища проектов. Изменяется только через .env." },
 ];
 
 const EDITABLE: EditableSetting[] = [
@@ -738,7 +739,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   }
 
   const rows: Record<SettingSection, string[]> = {
-    telegram: [], access: [], backups: [],
+    telegram: [], access: [], backups: [], storage: [],
   };
   for (const item of EDITABLE) {
     const effective = settings.get(item.key);
@@ -779,11 +780,36 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     );
   }
 
+  const s3Enabled = ["1", "true", "yes", "on"].includes(
+    (process.env.S3_ENABLED || "false").trim().toLowerCase(),
+  );
+  let s3Endpoint = process.env.S3_ENDPOINT || "—";
+  try {
+    const parsed = new URL(s3Endpoint);
+    parsed.username = ""; parsed.password = "";
+    s3Endpoint = parsed.toString().replace(/\/$/, "");
+  } catch { /* показываем исходное не-секретное значение */ }
+  const s3Info: Array<[string, string]> = [
+    ["S3_ENABLED", s3Enabled ? "Включено" : "Выключено — используется локальный режим"],
+    ["S3_ENDPOINT", s3Endpoint],
+    ["S3_BUCKET", process.env.S3_BUCKET || "—"],
+    ["S3_REGION", process.env.S3_REGION || "—"],
+    ["S3_PREFIX", process.env.S3_PREFIX || "projects/"],
+    ["S3_ACCESS_KEY", process.env.S3_ACCESS_KEY ? mask(process.env.S3_ACCESS_KEY) : "—"],
+    ["S3_SECRET_KEY", process.env.S3_SECRET_KEY ? "Настроен" : "Не задан"],
+    ["S3_EXCLUDE", process.env.S3_EXCLUDE || "Только встроенные исключения"],
+  ];
+  rows.storage.push(...s3Info.map(([key, value]) =>
+    `<tr><td style="width:210px"><div class="setting-name"><b>${esc(key)}</b>`
+    + `<span class="badge env">.env</span></div></td><td>${esc(value)}</td></tr>`,
+  ));
+
   const noteBlock =
     `<div class="note rise"><b>Управление настройками</b><br>`
     + `Изменения сохраняются как переопределения и применяются автоматически.<br>`
     + `Обычные значения можно редактировать полностью, а локальные секреты — безопасно создавать заново.<br>`
     + `Секреты Telegram заменяются вручную, поскольку их выдаёт @BotFather. `
+    + `S3-параметры требуют проверки при старте MCP и изменяются только через .env. `
     + `Кнопка «По умолчанию» возвращает значение из .env.</div>`;
 
   const requestedTab = url.searchParams.get("tab") as SettingSection | null;

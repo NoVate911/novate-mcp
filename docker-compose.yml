@@ -8,7 +8,8 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      # MCP видит ТОЛЬКО папку PROJECTS_DIR из .env — больше ничего на сервере
+      # /data всегда обычная POSIX FS (host bind), никогда не S3/FUSE mount.
+      # При S3_ENABLED=true MCP использует её как рабочую копию и синхронизирует через API.
       - ${PROJECTS_DIR:-./projects}:/data
       # Время внутри контейнера = как на хосте
       - /etc/localtime:/etc/localtime:ro
