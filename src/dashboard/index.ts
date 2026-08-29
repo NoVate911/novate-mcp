@@ -849,12 +849,11 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   ];
   const connectionClass = connection === "Подключено" ? "ok"
     : connection === "Ошибка" ? "error" : connection === "Отключено" ? "off" : "wait";
-  const s3RuntimeRows = `<tr><td style="width:210px"><div class="setting-name"><b>Состояние</b>`
-    + `<span class="badge panel">runtime</span></div></td>`
+  const s3RuntimeRows = `<tr><td style="width:210px"><div class="setting-name"><b>Состояние</b></div></td>`
     + `<td><span class="storage-state ${connectionClass}"><i></i>${esc(connection)}</span></td></tr>`
     + runtimeInfo.map(([key, value]) =>
-      `<tr><td style="width:210px"><div class="setting-name"><b>${esc(key)}</b>`
-      + `<span class="badge panel">runtime</span></div></td><td>${esc(value)}</td></tr>`,
+      `<tr><td style="width:210px"><div class="setting-name"><b>${esc(key)}</b></div></td>`
+      + `<td>${esc(value)}</td></tr>`,
     ).join("");
 
   const noteBlock =
@@ -909,8 +908,9 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   const panels = SETTING_SECTIONS.map((section) =>
     `<section class="settings-panel" id="settings-${section.id}" role="tabpanel" `
     + `data-settings-panel="${section.id}"${section.id === activeTab ? "" : " hidden"}>`
-    + `<div class="settings-section-head"><h2>${esc(section.label)}</h2>`
-    + `<p>${esc(section.description)}</p></div>`
+    + (section.id === "storage" ? ""
+      : `<div class="settings-section-head"><h2>${esc(section.label)}</h2>`
+        + `<p>${esc(section.description)}</p></div>`)
     + (section.id === "storage" ? storageContent
       : `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>`)
     + `</section>`,
