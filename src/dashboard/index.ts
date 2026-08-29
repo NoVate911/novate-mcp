@@ -52,41 +52,49 @@ const TG_ISSUER = "https://oauth.telegram.org";
 
 // Редактируемые в панели настройки
 type SettingMode = "text" | "external-secret" | "generated-secret";
+type SettingSection = "telegram" | "configuration" | "access" | "backups";
 type EditableSetting = {
-  key: string; label: string; hint: string; mode: SettingMode;
+  key: string; label: string; hint: string; mode: SettingMode; section: SettingSection;
 };
+
+const SETTING_SECTIONS: Array<{ id: SettingSection; label: string; description: string }> = [
+  { id: "telegram", label: "Telegram", description: "Вход через Telegram и отправка бэкапов в чат." },
+  { id: "configuration", label: "Конфигурация", description: "Основные параметры панели и домена." },
+  { id: "access", label: "Доступ и безопасность", description: "Сессии панели и токен MCP-доступа." },
+  { id: "backups", label: "Бэкапы", description: "Расписание, хранение и шифрование резервных копий." },
+];
 
 const EDITABLE: EditableSetting[] = [
   { key: "ALLOWED_TG_USERS", label: "Telegram ID с доступом в панель",
     hint: "Редактируйте весь список через запятую: можно дописывать новые ID и удалять старые. Применяется сразу.",
-    mode: "text" },
+    mode: "text", section: "telegram" },
   { key: "TG_CLIENT_ID", label: "Telegram OIDC Client ID",
-    hint: "ID OIDC-приложения из @BotFather. Применяется сразу.", mode: "text" },
+    hint: "ID OIDC-приложения из @BotFather. Применяется сразу.", mode: "text", section: "telegram" },
   { key: "TG_CLIENT_SECRET", label: "Telegram OIDC Client Secret",
     hint: "Выдаётся @BotFather, поэтому локально не генерируется. Поле пустое, пока секрет не заменяется.",
-    mode: "external-secret" },
+    mode: "external-secret", section: "telegram" },
   { key: "SESSION_SECRET", label: "Секрет сессий панели",
     hint: "Генерируется панелью. После замены все текущие сессии завершаются.",
-    mode: "generated-secret" },
+    mode: "generated-secret", section: "access" },
   { key: "MCP_TOKEN", label: "Токен MCP-доступа (Bearer)",
     hint: "Генерируется панелью. MCP-сервис автоматически перечитает токен и перезапустит свой процесс.",
-    mode: "generated-secret" },
+    mode: "generated-secret", section: "access" },
   { key: "DOMAIN", label: "Домен сервера",
     hint: "Ссылки в панели и callback Telegram — сразу. HTTPS-домен Caddy меняется через .env + install.sh.",
-    mode: "text" },
+    mode: "text", section: "configuration" },
   { key: "TG_BOT_TOKEN", label: "Токен Telegram-бота",
     hint: "Выдаётся @BotFather, поэтому локально не генерируется. Применяется в течение минуты.",
-    mode: "external-secret" },
+    mode: "external-secret", section: "telegram" },
   { key: "TG_CHAT_ID", label: "ID чата для бэкапов",
     hint: "Можно отредактировать текущее значение или очистить поле. Применяется в течение минуты.",
-    mode: "text" },
+    mode: "text", section: "telegram" },
   { key: "BACKUP_INTERVAL_HOURS", label: "Интервал бэкапов, часов",
-    hint: "Как часто делать бэкап. Применяется в течение минуты.", mode: "text" },
+    hint: "Как часто делать бэкап. Применяется в течение минуты.", mode: "text", section: "backups" },
   { key: "BACKUP_KEEP", label: "Локальных копий бэкапов",
-    hint: "Столько последних архивов хранится на сервере.", mode: "text" },
+    hint: "Столько последних архивов хранится на сервере.", mode: "text", section: "backups" },
   { key: "BACKUP_PASSWORD", label: "Пароль шифрования бэкапов (AES-256)",
     hint: "Генерируется панелью и применяется в течение минуты. Сохраните копию: без неё .enc не расшифровать.",
-    mode: "generated-secret" },
+    mode: "generated-secret", section: "backups" },
 ];
 
 // ---------- безопасность ----------
@@ -725,7 +733,9 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     flash = toast("Переопределение сброшено — снова действует значение из .env.", "success");
   }
 
-  const rows: string[] = [];
+  const rows: Record<SettingSection, string[]> = {
+    telegram: [], configuration: [], access: [], backups: [],
+  };
   for (const item of EDITABLE) {
     const effective = settings.get(item.key);
     const src = settings.source(item.key);
@@ -756,7 +766,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
         + `<button class="btn" type="submit" name="action" value="save">Сохранить</button>${resetBtn}</form>`;
     }
 
-    rows.push(
+    rows[item.section].push(
       `<tr><td style="width:210px"><b>${esc(item.key)}</b>`
       + `<div class="hint">${esc(item.label)}</div></td>`
       + `<td><span class="val">${shown}</span> ${badge}${editor}`
@@ -773,9 +783,26 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `TG_CLIENT_SECRET и TG_BOT_TOKEN выдаёт Telegram — их можно только заменить вручную. `
     + `Кнопка «По умолчанию» удаляет переопределение и возвращает значение из .env.</div>`;
 
+  const requestedTab = url.searchParams.get("tab") as SettingSection | null;
+  const activeTab = SETTING_SECTIONS.some((section) => section.id === requestedTab)
+    ? requestedTab as SettingSection
+    : "telegram";
+  const tabs = `<div class="settings-tabs rise" role="tablist" aria-label="Разделы настроек">`
+    + SETTING_SECTIONS.map((section) =>
+      `<button type="button" role="tab" data-settings-tab="${section.id}" `
+      + `aria-controls="settings-${section.id}" aria-selected="${section.id === activeTab}">`
+      + `${esc(section.label)}</button>`,
+    ).join("") + `</div>`;
+  const panels = SETTING_SECTIONS.map((section) =>
+    `<section class="settings-panel" id="settings-${section.id}" role="tabpanel" `
+    + `data-settings-panel="${section.id}"${section.id === activeTab ? "" : " hidden"}>`
+    + `<div class="settings-section-head"><h2>${esc(section.label)}</h2>`
+    + `<p>${esc(section.description)}</p></div>`
+    + `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div></section>`,
+  ).join("");
+
   return shell("NoVate MCP — настройки",
-    header("settings", user) + flash + `<div class="wrap">${noteBlock}`
-    + `<div class="panel rise"><table><tbody>${rows.join("")}</tbody></table></div></div>`);
+    header("settings", user) + flash + `<div class="wrap">${noteBlock}${tabs}${panels}</div>`);
 }
 
 // ---------- роутер ----------
@@ -1051,13 +1078,15 @@ async function route(req: Request): Promise<Response> {
     if (action === "reset") {
       settings.clearOverride(key);
       tgNotify("⚙️ Настройка " + key + " сброшена к .env (пользователь " + session.name + ")");
-      return redirect("/settings?reset=1");
+      return redirect(`/settings?tab=${item.section}&reset=1`);
     }
     if (action === "generate" && item.mode === "generated-secret") {
       const value = randomBytes(32).toString("hex");
       settings.setOverride(key, value);
       tgNotify("⚙️ Сгенерировано новое значение " + key + " (пользователь " + session.name + ")");
-      return html(settingsPage(url, session.name, { key, value }));
+      const settingsUrl = new URL(url);
+      settingsUrl.searchParams.set("tab", item.section);
+      return html(settingsPage(settingsUrl, session.name, { key, value }));
     }
     if (action === "save" && item.mode !== "generated-secret") {
       const value = String(form.get("value") || "").trim();
@@ -1065,7 +1094,7 @@ async function route(req: Request): Promise<Response> {
         settings.setOverride(key, value);
         tgNotify("⚙️ Настройка " + key + " изменена из панели (пользователь " + session.name + ")");
       }
-      return redirect("/settings?saved=1");
+      return redirect(`/settings?tab=${item.section}&saved=1`);
     }
     return redirect("/settings");
   }

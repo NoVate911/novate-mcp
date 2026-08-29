@@ -140,6 +140,27 @@ h1 a { color: inherit; text-decoration: none; }
 a.tag:hover { color: var(--accent); border-color: var(--accent); }
 
 /* ---- таблицы ---- */
+/* ---- вкладки настроек ---- */
+.settings-tabs {
+  display: flex; gap: 8px; align-items: center; overflow-x: auto;
+  padding: 6px; margin-bottom: 22px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 14px;
+  scrollbar-width: thin;
+}
+.settings-tabs button {
+  appearance: none; border: 0; background: transparent; color: var(--muted);
+  border-radius: 9px; padding: 10px 15px; font: inherit; font-size: 13px;
+  font-weight: 650; white-space: nowrap; cursor: pointer;
+  transition: color .2s ease, background .2s ease, transform .2s ease;
+}
+.settings-tabs button:hover { color: var(--text); background: rgba(139, 148, 160, .09); }
+.settings-tabs button[aria-selected=true] { color: var(--accent); background: var(--accent-soft); }
+.settings-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.settings-section-head { margin: 0 4px 14px; }
+.settings-section-head h2 { margin: 0 0 5px; font-size: 20px; }
+.settings-section-head p { margin: 0; color: var(--muted); font-size: 13px; }
+.settings-panel { animation: rise .25s ease both; }
+
 /* ---- поиск и фильтры ---- */
 .filters {
   display: grid; grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(130px, auto));
@@ -320,7 +341,7 @@ export function shell(title: string, content: string): string {
     + `<meta name="viewport" content="width=device-width, initial-scale=1">`
     + `<title>${esc(title)}</title><style>${CSS}</style></head><body>`
     + content
-    + `<script src="/static/client.js?v=6" defer></script></body></html>`;
+    + `<script src="/static/client.js?v=7" defer></script></body></html>`;
 }
 
 /** Липкая шапка с навигацией. */

@@ -111,3 +111,34 @@ document.querySelectorAll<HTMLInputElement>("[data-auto-submit-file]").forEach((
     input.form.requestSubmit();
   });
 });
+
+
+// Вкладки настроек без перезагрузки с сохранением выбранного раздела в URL.
+document.querySelectorAll<HTMLElement>(".settings-tabs").forEach((tabList) => {
+  const tabs = Array.from(tabList.querySelectorAll<HTMLButtonElement>("[data-settings-tab]"));
+  const panels = Array.from(document.querySelectorAll<HTMLElement>("[data-settings-panel]"));
+  const activate = (id: string, updateUrl = true): void => {
+    if (!tabs.some((tab) => tab.dataset.settingsTab === id)) return;
+    tabs.forEach((tab) => tab.setAttribute(
+      "aria-selected", String(tab.dataset.settingsTab === id),
+    ));
+    panels.forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== id; });
+    if (updateUrl) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", id);
+      history.replaceState(null, "", url);
+    }
+  };
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => activate(tab.dataset.settingsTab || ""));
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      const next = tabs[(index + step + tabs.length) % tabs.length];
+      next.focus();
+      activate(next.dataset.settingsTab || "");
+    });
+  });
+});
