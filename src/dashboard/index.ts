@@ -743,8 +743,6 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   for (const item of EDITABLE) {
     const effective = settings.get(item.key);
     const src = settings.source(item.key);
-    const secret = item.mode !== "text";
-    const shown = secret ? mask(effective) : esc(effective || "(не задан)");
     const badge = src === "panel"
       ? `<span class="badge panel">панель</span>`
       : `<span class="badge env">.env</span>`;
@@ -771,9 +769,9 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     }
 
     rows[item.section].push(
-      `<tr><td style="width:210px"><b>${esc(item.key)}</b>`
+      `<tr><td style="width:210px"><div class="setting-name"><b>${esc(item.key)}</b>${badge}</div>`
       + `<div class="hint">${esc(item.label)}</div></td>`
-      + `<td><span class="val">${shown}</span> ${badge}${editor}`
+      + `<td>${editor}`
       + `<form id="reset-${esc(item.key)}" method="post" action="/settings">`
       + `<input type="hidden" name="key" value="${esc(item.key)}">`
       + `<input type="hidden" name="action" value="reset"></form>`

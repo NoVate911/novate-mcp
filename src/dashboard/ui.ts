@@ -61,7 +61,7 @@ const CSS = `
     -webkit-user-select: none; -moz-user-select: none; user-select: none; }
 input, textarea { -webkit-user-select: text; -moz-user-select: text; user-select: text; }
 button, input, select, textarea { font: inherit; }
-code, pre, .val, .generated-secret {
+code, pre, .generated-secret {
   font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   font-variant-ligatures: none;
 }
@@ -220,8 +220,9 @@ a:hover { text-decoration: underline; }
   font-size: 12px; font-weight: 600; }
 .badge.env { background: rgba(139, 148, 160, .14); color: var(--muted); }
 .badge.panel { background: var(--accent-soft); color: var(--accent); }
+.setting-name { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.setting-name .badge { flex: 0 0 auto; }
 .hint { color: var(--muted); opacity: .8; font-size: 12px; margin-top: 7px; line-height: 1.55; }
-.val { font-size: 13px; font-weight: 500; }
 form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .note {
   background: var(--surface); border: 1px solid var(--border);
