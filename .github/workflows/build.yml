@@ -63,6 +63,9 @@ jobs:
       - name: TypeScript typecheck
         working-directory: src/dashboard
         run: bun run typecheck
+      - name: Session security tests
+        working-directory: src/dashboard
+        run: bun run test
       - name: Build dashboard and browser bundle
         working-directory: src/dashboard
         run: bun run build

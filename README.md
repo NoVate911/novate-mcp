@@ -473,6 +473,32 @@ BACKUP_STALE_AFTER_HOURS=48
 
 История изменений ведётся в [CHANGELOG.md](CHANGELOG.md).
 
+### Безопасный deploy и rollback
+
+Для последней сборки или конкретного релиза используйте:
+
+```bash
+./deploy.sh latest
+./deploy.sh 26.8.1.001
+```
+
+Скрипт блокирует параллельные запуски, сохраняет `.env` и локальные снимки текущих
+образов, проверяет Compose, запускает новые контейнеры, ждёт health/readiness и
+выполняет smoke-test панели. При ошибке или таймауте прежние образы и `.env`
+восстанавливаются автоматически. Таймаут задаётся через `NOVATE_DEPLOY_TIMEOUT`.
+
+### Защита от поисковой индексации
+
+Caddy отдаёт `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`
+на всех маршрутах, `robots.txt` с `Disallow: /`, не публикует sitemap и устанавливает
+`Referrer-Policy: no-referrer`. Это распространяется на панель, MCP и `/projects/*`.
+
+> Важно: `noindex` убирает сайт из обычной поисковой выдачи, но не делает публичный
+> домен секретным. Его всё ещё можно обнаружить через DNS, журналы Certificate
+> Transparency и сетевое сканирование. Панель защищена Telegram OIDC, MCP — Bearer
+> token, а `/projects/*` доступен любому, кто знает URL. Для реальной приватности
+> добавьте VPN, IP allowlist или Cloudflare Access.
+
 <a id="updates"></a>
 ## 🔄 Обновление
 
@@ -480,8 +506,7 @@ BACKUP_STALE_AFTER_HOURS=48
 # 1. Запушил изменения в main -> Actions собрал новые образы
 # 2. На сервере:
 cd ~/mcp-server
-docker compose pull
-docker compose up -d
+./deploy.sh latest
 ```
 
 <a id="commands"></a>

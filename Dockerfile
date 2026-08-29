@@ -19,8 +19,8 @@ USER appuser
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5m --retries=5 \
-  CMD ["python", "healthcheck.py", "tcp", "127.0.0.1", "8000"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["python", "healthcheck.py", "http", "http://127.0.0.1:8002/health/live", "200"]
 
 CMD ["python", "server.py"]
 

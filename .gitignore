@@ -47,3 +47,7 @@ Thumbs.db
 *.temp
 .cache/
 tmp/
+
+# Local deploy snapshots and lock
+.deploy/
+.deploy.lock/

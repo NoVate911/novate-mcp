@@ -142,3 +142,34 @@ document.querySelectorAll<HTMLElement>(".settings-tabs").forEach((tabList) => {
     });
   });
 });
+
+
+// Живой прогресс фоновой startup-синхронизации S3.
+const storageProgress = document.querySelector<HTMLElement>("[data-storage-progress]");
+if (storageProgress) {
+  const phase = storageProgress.querySelector<HTMLElement>("[data-storage-phase]");
+  const count = storageProgress.querySelector<HTMLElement>("[data-storage-count]");
+  const bar = storageProgress.querySelector<HTMLElement>("[data-storage-bar]");
+  const labels: Record<string, string> = {
+    outbox: "Обработка очереди", merge: "Сверка локальных и S3-файлов",
+    reconcile: "Финальная проверка", complete: "Синхронизация завершена",
+    error: "Ошибка синхронизации",
+  };
+  const refresh = async (): Promise<void> => {
+    try {
+      const response = await fetch("/api/storage-status", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json() as { startup?: Record<string, unknown> };
+      const startup = data.startup || {};
+      const current = Math.max(0, Number(startup.current || 0));
+      const total = Math.max(1, Number(startup.total || 1));
+      const percent = Math.min(100, Math.round(current / total * 100));
+      if (phase) phase.textContent = labels[String(startup.phase || "")] || "Ожидание запуска";
+      if (count) count.textContent = `${current}/${total} · ${percent}%`;
+      if (bar) bar.style.width = `${percent}%`;
+      storageProgress.dataset.state = String(startup.state || "idle");
+    } catch { /* следующий poll повторит запрос */ }
+  };
+  void refresh();
+  window.setInterval(() => void refresh(), 2000);
+}

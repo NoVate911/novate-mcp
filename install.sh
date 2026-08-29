@@ -203,7 +203,7 @@ echo ""
 echo "Проверка MCP: curl -i https://$DOMAIN/mcp/  (ожидается 401)"
 echo ""
 echo "Обновление до новой версии (после пуша в GitHub):"
-echo "  cd $BASE_DIR && docker compose pull && docker compose up -d"
+echo "  cd $BASE_DIR && ./deploy.sh latest"
 
 if [ -f /var/run/reboot-required ]; then
   echo ""

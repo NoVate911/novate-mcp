@@ -1,4 +1,6 @@
+import json
 import os
+import socket
 import re
 import shutil
 import subprocess
@@ -6,6 +8,7 @@ import sys
 import threading
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -28,9 +31,12 @@ if not MCP_TOKEN:
 # Папка ВНУТРИ контейнера, в которую смонтирована папка PROJECTS_DIR с хоста.
 # Все инструменты работают только внутри неё.
 DATA_DIR = Path(os.environ.get("MCP_DATA_DIR", "/data")).resolve()
-# При S3_ENABLED=true здесь же валидируются credentials/bucket и выполняется
-# безопасное объединение S3 с локальной рабочей копией.
-STORAGE = create_storage(DATA_DIR)
+# Конструктор не делает сетевых запросов: MCP начинает слушать порт сразу,
+# а безопасное S3 startup reconciliation выполняется в фоне.
+STORAGE = create_storage(DATA_DIR, validate=False, restore=False)
+STORAGE_READY = threading.Event()
+STARTUP_ERROR = ""
+HEALTH_PORT = int(os.environ.get("MCP_HEALTH_PORT", "8002"))
 
 # Публичный домен сервера (используется в описаниях инструментов)
 DOMAIN = settings.get("DOMAIN")
@@ -43,6 +49,71 @@ auth = StaticTokenVerifier(
 
 mcp = FastMCP(name="VPS Tools", auth=auth)
 
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Внутренние liveness/readiness endpoints без авторизации и секретов."""
+
+    def log_message(self, _format: str, *_args) -> None:
+        return
+
+    @staticmethod
+    def _mcp_listening() -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", 8000), timeout=0.2):
+                return True
+        except OSError:
+            return False
+
+    def _json(self, status: int, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        live = self._mcp_listening()
+        if self.path == "/health/live":
+            self._json(200 if live else 503, {"status": "live" if live else "starting"})
+            return
+        if self.path == "/health/ready":
+            ready = live and STORAGE_READY.is_set()
+            self._json(200 if ready else 503, {
+                "status": "ready" if ready else "not_ready",
+                "storage": "ready" if STORAGE_READY.is_set() else "reconciling",
+                "error": STARTUP_ERROR,
+            })
+            return
+        self._json(404, {"status": "not_found"})
+
+
+def serve_health() -> None:
+    ThreadingHTTPServer(("127.0.0.1", HEALTH_PORT), HealthHandler).serve_forever()
+
+
+def startup_reconciliation() -> None:
+    """Проверяет S3 и объединяет данные, не задерживая запуск FastMCP HTTP."""
+    global STARTUP_ERROR
+    if not STORAGE.enabled:
+        STORAGE_READY.set()
+        return
+    while not STORAGE_READY.is_set():
+        try:
+            STORAGE.validate()
+            result = STORAGE.startup_merge()
+            STARTUP_ERROR = ""
+            STORAGE_READY.set()
+            print(f"[storage] background startup merge: {result.describe()}", flush=True)
+        except Exception as exc:
+            STARTUP_ERROR = str(exc) if isinstance(exc, StorageError) else type(exc).__name__
+            print(f"[storage] background startup merge failed; retry in 30s: {STARTUP_ERROR}", flush=True)
+            time.sleep(30)
+    threading.Thread(
+        target=STORAGE.maintenance_loop, args=(S3_ACTION_TRIGGER,), daemon=True,
+    ).start()
 
 def safe_path(path: str) -> Path:
     """Разрешаем пути только внутри DATA_DIR (защита от выхода через ../)."""
@@ -453,10 +524,11 @@ def watch_mcp_token() -> None:
 
 
 if __name__ == "__main__":
+    threading.Thread(target=serve_health, daemon=True).start()
     threading.Thread(target=watch_mcp_token, daemon=True).start()
     if STORAGE.enabled:
         threading.Thread(target=watch_external_sync, daemon=True).start()
-        threading.Thread(
-            target=STORAGE.maintenance_loop, args=(S3_ACTION_TRIGGER,), daemon=True,
-        ).start()
+        threading.Thread(target=startup_reconciliation, daemon=True).start()
+    else:
+        STORAGE_READY.set()
     mcp.run(transport="http", host="0.0.0.0", port=8000, path="/mcp/")

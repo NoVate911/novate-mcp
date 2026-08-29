@@ -276,6 +276,13 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .storage-state.error { color: #ff7b8c; background: rgba(255, 90, 110, .09); border-color: rgba(255, 90, 110, .24); }
 .storage-state.wait { color: #f4bf64; background: rgba(244, 191, 100, .09); border-color: rgba(244, 191, 100, .24); }
 .storage-state.off { color: var(--muted); }
+
+.storage-progress { margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.storage-progress-head { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 9px; color: var(--muted); font-size: 12px; }
+.storage-progress-head b { color: var(--text); font-family: var(--mono); }
+.storage-progress-track { height: 7px; overflow: hidden; border-radius: 99px; background: rgba(139,148,160,.14); }
+.storage-progress-track i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .35s ease; }
+.storage-progress[data-state="error"] .storage-progress-track i { background: #ff5a6e; }
 .s3-actions-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .s3-action-card {
   display: flex; flex-direction: column; min-height: 210px; padding: 18px;

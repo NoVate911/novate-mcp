@@ -1,11 +1,31 @@
 # {$DOMAIN} подставляется из .env (передаётся через docker-compose)
 {$DOMAIN} {
+	# Запрещаем поисковую индексацию для панели, MCP и опубликованных проектов.
+	header {
+		X-Robots-Tag "noindex, nofollow, noarchive, nosnippet, noimageindex"
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+	}
+
+	@robots path /robots.txt
+	handle @robots {
+		header Content-Type "text/plain; charset=utf-8"
+		header Cache-Control "public, max-age=3600"
+		respond "User-agent: *\nDisallow: /\n" 200
+	}
+
+	@sitemap path /sitemap.xml /sitemap*.xml
+	handle @sitemap {
+		respond 404
+	}
+
 	# MCP-эндпоинт -> контейнер с FastMCP
 	handle /mcp* {
 		reverse_proxy mcp:8000
 	}
 
-	# Опубликованные проекты (сайты, созданные ИИ) — публичный просмотр
+	# Опубликованные проекты (сайты, созданные ИИ) — публичный просмотр.
+	# Они не индексируются, но остаются доступны любому, кто знает URL.
 	handle_path /projects/* {
 		root * /srv/projects
 		file_server

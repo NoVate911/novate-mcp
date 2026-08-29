@@ -23,8 +23,7 @@
  */
 
 import {
-  createCipheriv, createDecipheriv, createHash, createPublicKey, randomBytes,
-  scryptSync, verify as cryptoVerify,
+  createHash, createPublicKey, randomBytes, verify as cryptoVerify,
 } from "node:crypto";
 import {
   copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, statfsSync,
@@ -33,6 +32,7 @@ import {
 import os from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import * as settings from "./settings.ts";
+import { createSessionCodec } from "./session.ts";
 import { esc, fmtTime, header, humanSize, loginPage, mask, shell, toast } from "./ui.ts";
 
 const DATA_DIR = resolve(process.env.MCP_DATA_DIR || "/data");
@@ -98,67 +98,13 @@ const EDITABLE: EditableSetting[] = [
 
 // ---------- безопасность ----------
 
-const SESSION_KDF_CONTEXT = "novate-mcp/session-signing-key/v1";
-let cachedSessionSecret = "";
-let cachedSessionKey: Buffer | null = null;
+const sessionCodec = createSessionCodec(() => settings.get("SESSION_SECRET"));
+const packSigned = sessionCodec.packSigned;
+const unpackSigned = sessionCodec.unpackSigned;
 
-/**
- * SESSION_SECRET может быть введён вручную, поэтому перед использованием в
- * cookie получаем отдельный 256-битный ключ через memory-hard scrypt. Кэш
- * сбрасывается автоматически после смены секрета в панели.
- */
-function sessionCookieKey(): Buffer {
-  const sessionSecret = settings.get("SESSION_SECRET");
-  if (!cachedSessionKey || sessionSecret !== cachedSessionSecret) {
-    cachedSessionSecret = sessionSecret;
-    cachedSessionKey = scryptSync(sessionSecret, SESSION_KDF_CONTEXT, 32, {
-      N: 1 << 15,
-      r: 8,
-      p: 1,
-      maxmem: 64 * 1024 * 1024,
-    });
-  }
-  return cachedSessionKey;
-}
-
+// Используется также для OAuth state/challenge, которые не являются session cookie.
 function b64url(buf: Buffer): string {
-  // base64url собираем вручную из base64 — не зависим от поддержки кодировки в рантайме
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-/**
- * Аутентифицированная cookie: nonce.ciphertext.authTag. AES-256-GCM одновременно
- * защищает содержимое и проверяет целостность без отдельного password/HMAC hash.
- */
-function packSigned(payload: Record<string, unknown>): string {
-  const nonce = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", sessionCookieKey(), nonce);
-  const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
-  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return `${b64url(nonce)}.${b64url(ciphertext)}.${b64url(authTag)}`;
-}
-
-/** Расшифровка, проверка GCM authentication tag и срока жизни cookie. */
-function unpackSigned(cookie: string, ttl: number): Record<string, unknown> | null {
-  const parts = cookie.split(".");
-  if (parts.length !== 3 || parts.some((part) => !part)) return null;
-  try {
-    const nonce = Buffer.from(parts[0]!, "base64url");
-    const ciphertext = Buffer.from(parts[1]!, "base64url");
-    const authTag = Buffer.from(parts[2]!, "base64url");
-    if (nonce.length !== 12 || authTag.length !== 16 || ciphertext.length === 0) return null;
-    const decipher = createDecipheriv("aes-256-gcm", sessionCookieKey(), nonce);
-    decipher.setAuthTag(authTag);
-    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    const data = JSON.parse(plaintext.toString("utf8")) as Record<string, unknown>;
-    if (typeof data.ts !== "number") return null;
-    const age = Math.floor(Date.now() / 1000) - data.ts;
-    if (age < 0 || age > ttl) return null;
-    return data;
-  } catch {
-    return null;
-  }
 }
 
 function cookieStr(name: string, value: string, maxAge: number): string {
@@ -851,15 +797,31 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   if (!s3Enabled) s3Status = {};
   const statusResult = s3Status.last_result && typeof s3Status.last_result === "object"
     ? s3Status.last_result as Record<string, unknown> : {};
+  const startup = s3Status.startup && typeof s3Status.startup === "object"
+    ? s3Status.startup as Record<string, unknown> : {};
+  const startupState = String(startup.state || "idle");
+  const startupCurrent = Math.max(0, Number(startup.current || 0));
+  const startupTotal = Math.max(1, Number(startup.total || 1));
+  const startupPercent = Math.min(100, Math.round(startupCurrent / startupTotal * 100));
+  const phaseLabels: Record<string, string> = {
+    outbox: "Обработка очереди", merge: "Сверка локальных и S3-файлов",
+    reconcile: "Финальная проверка", complete: "Синхронизация завершена",
+    error: "Ошибка синхронизации",
+  };
+  const startupPhase = phaseLabels[String(startup.phase || "")] || "Ожидание запуска";
   const connection = !s3Enabled ? "Отключено"
-    : s3Status.connection === "ok" ? "Подключено"
-    : s3Status.connection === "error" ? "Ошибка" : "Запускается";
+    : startupState === "running" ? "Фоновая синхронизация"
+    : startupState === "error" || s3Status.connection === "error" ? "Ошибка"
+    : s3Status.connection === "ok" ? "Подключено" : "Запускается";
   const statusTime = (value: unknown): string => {
     if (typeof value !== "string" || !value) return "—";
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? fmtTime(parsed) : value;
   };
   const runtimeInfo: Array<[string, string]> = [
+    ["Фоновая сверка", startupState === "running"
+      ? `${startupPhase}: ${startupCurrent}/${startupTotal} (${startupPercent}%)`
+      : startupPhase],
     ["Операций в очереди", String(s3Status.pending ?? 0)],
     ["Статус обновлён", statusTime(s3Status.updated_at)],
     ["Последняя успешная операция", statusTime(s3Status.last_success)],
@@ -870,6 +832,10 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   ];
   const connectionClass = connection === "Подключено" ? "ok"
     : connection === "Ошибка" ? "error" : connection === "Отключено" ? "off" : "wait";
+  const startupProgress = s3Enabled ? `<div class="storage-progress" data-storage-progress>`
+    + `<div class="storage-progress-head"><span data-storage-phase>${esc(startupPhase)}</span>`
+    + `<b data-storage-count>${startupCurrent}/${startupTotal} · ${startupPercent}%</b></div>`
+    + `<div class="storage-progress-track"><i data-storage-bar style="width:${startupPercent}%"></i></div></div>` : "";
   const s3RuntimeRows = `<tr><td style="width:210px"><div class="setting-name"><b>Состояние</b></div></td>`
     + `<td><span class="storage-state ${connectionClass}"><i></i>${esc(connection)}</span></td></tr>`
     + runtimeInfo.map(([key, value]) =>
@@ -906,7 +872,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `<div class="settings-group"><div class="settings-group-head"><div>`
     + `<span class="settings-group-kicker">Мониторинг</span><h3>Состояние и синхронизация</h3>`
     + `<p>Текущий статус MCP, постоянной очереди и последней сверки рабочей копии с S3.</p>`
-    + `</div></div><div class="panel"><table><tbody>${s3RuntimeRows}</tbody></table></div></div>`
+    + `</div></div>${startupProgress}<div class="panel"><table><tbody>${s3RuntimeRows}</tbody></table></div></div>`
     + `<div class="settings-group"><div class="settings-group-head"><div>`
     + `<span class="settings-group-kicker">Ручное управление</span><h3>Операции с хранилищем</h3>`
     + `<p>Каждое действие выполняет отдельную задачу и не меняет параметры подключения.</p>`
@@ -1062,6 +1028,21 @@ async function route(req: Request): Promise<Response> {
   // Дальше — только после входа
   const session = sessionOf(req);
   if (!session) return redirect("/login");
+
+  if (method === "GET" && path === "/api/storage-status") {
+    let status: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(readFileSync(S3_STATUS_FILE, "utf8"));
+      if (parsed && typeof parsed === "object") status = parsed;
+    } catch { /* S3 disabled or status not created yet */ }
+    return new Response(JSON.stringify({
+      connection: status.connection || "initializing",
+      pending: status.pending || 0,
+      startup: status.startup || {},
+      updated_at: status.updated_at || null,
+      last_error: status.last_error || "",
+    }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+  }
 
   if (method === "GET" && path === "/") return html(indexPage(url, session.name));
 

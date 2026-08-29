@@ -389,12 +389,14 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
 - `NOVATE_VERSION` в `.env` выбирает единый суффикс всех трёх образов; по
   умолчанию `latest`. Не смешивай версии сервисов без отдельного обоснования.
 - Перед PR обязательны Python tests, `py_compile`, `bash -n`, YAML/Compose,
-  `bun run typecheck` и `bun run build` из `src/dashboard`.
+  `bun run typecheck`, `bun run test` и `bun run build` из `src/dashboard`.
 - Security workflow использует Gitleaks и Trivy; не ослабляй HIGH/CRITICAL
   enforcement без документированного исключения.
-- MCP и dashboard healthchecks проверяют локальные порты. MCP start-period —
-  минимум 5 минут из-за возможного долгого S3 startup merge. Backup healthcheck
-  читает `/backups/.backup-heartbeat.json`; heartbeat обновляется каждый цикл.
+- S3 startup merge не должен блокировать открытие FastMCP-порта: validate/merge
+  выполняются в daemon thread с прогрессом в `/storage-state/status.json`.
+- MCP liveness — `127.0.0.1:8002/health/live`, readiness — `/health/ready` после
+  S3 startup reconciliation. Docker проверяет liveness; deploy отдельно ждёт readiness.
+  Backup healthcheck читает `/backups/.backup-heartbeat.json`.
 - Никогда не блокируй запуск Caddy условием `service_healthy`: сбой или прогрев
   одного backend не должен отключать панель, публичные проекты и остальные маршруты.
 - Просроченным считается бэкап старше `BACKUP_STALE_AFTER_HOURS`, а если
@@ -402,4 +404,10 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   отправляется один раз до следующей успешной копии.
 - E2E-тесты бэкапа обязаны проверять обычный и AES-256 round trip, включая
   автоматический pre-restore snapshot.
+- `deploy.sh` обязан сохранять старые image IDs локальными тегами, ждать health и
+  readiness, выполнять smoke-test и автоматически откатывать `.env` и образы.
+- Caddy должен отдавать глобальный `X-Robots-Tag` и закрытый `robots.txt`; не
+  описывай это как полноценную приватность без auth/VPN/allowlist.
+- E2E-тесты session cookie обязаны проверять AES-256-GCM round trip, уникальный
+  nonce, expiry/future timestamps, tampering, malformed cookie и rotation секрета.
 - Все пользовательские изменения фиксируй в секции Unreleased CHANGELOG.md.

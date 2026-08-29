@@ -20,6 +20,11 @@
 
 ### Added
 
+- Фоновая S3 startup-сверка с повторными попытками, отдельными liveness/readiness endpoints и живым прогрессом в панели.
+- `deploy.sh` с блокировкой параллельных запусков, проверками, smoke-test и автоматическим rollback `.env`/образов.
+- E2E-тесты AES-256-GCM session cookie: round trip, nonce, TTL, tampering, malformed data и ротация секрета.
+- Глобальные noindex-заголовки, закрытый `robots.txt`, отключённый sitemap и `Referrer-Policy: no-referrer`.
+
 - Полная CI-проверка Bun/TypeScript и сборка dashboard.
 - Trivy и Gitleaks для поиска уязвимостей и секретов.
 - Версионированные GHCR-образы для тегов вида `26.8.1.001`.
@@ -28,6 +33,9 @@
 - Heartbeat backup-сервиса и Telegram-предупреждение о просроченном бэкапе.
 
 ### Changed
+
+- MCP Docker healthcheck теперь использует liveness, а S3 readiness проверяется deploy-процессом отдельно.
+- Криптография сессий вынесена в отдельный тестируемый модуль без изменения KDF context и формата cookie.
 
 - Docker Compose поддерживает выбор версии через `NOVATE_VERSION`, сохраняя `latest` по умолчанию.
 

@@ -366,38 +366,47 @@ class S3StorageCore(Storage):
             temp.unlink(missing_ok=True)
         return True
 
-    def startup_merge(self) -> SyncResult:
-        """Безопасное объединение: ничего локального не удаляем и не перезаписываем."""
+    def startup_merge(self, progress=None) -> SyncResult:
+        """Безопасное объединение без удаления локальных файлов и с прогрессом."""
         with self._lock:
             remote = {
                 rel: obj for obj in self._objects()
                 if (rel := self.rel_from_key(str(obj.get("Key", ""))))
                 and not self.is_excluded(rel)
             }
-            downloaded = conflicts = uploaded = 0
+            local = self.snapshot()
+            total = max(len(remote) + len(local), 1)
+            processed = downloaded = conflicts = uploaded = 0
+            if progress:
+                progress("merge", processed, total)
             for rel, obj in remote.items():
                 target = self._local_path(rel)
                 if target.exists() or target.is_symlink():
                     conflicts += 1
-                    # Локальная рабочая копия имеет приоритет при конфликте:
-                    # это также восстанавливает S3 после ранее неудачного PUT.
+                    # Локальная рабочая копия приоритетна и остаётся доступной агентам.
                     if target.is_file() and not target.is_symlink():
                         self.put_file(target)
                         uploaded += 1
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                temp = target.with_name(target.name + f".novate-{uuid.uuid4().hex}.tmp")
-                try:
-                    self._call("восстановление файла", self.client.download_file,
-                               self.bucket, obj["Key"], str(temp))
-                    os.replace(temp, target)
-                    downloaded += 1
-                finally:
-                    temp.unlink(missing_ok=True)
-            for rel in self.snapshot():
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    temp = target.with_name(target.name + f".novate-{uuid.uuid4().hex}.tmp")
+                    try:
+                        self._call("восстановление файла", self.client.download_file,
+                                   self.bucket, obj["Key"], str(temp))
+                        os.replace(temp, target)
+                        downloaded += 1
+                    finally:
+                        temp.unlink(missing_ok=True)
+                processed += 1
+                if progress:
+                    progress("merge", processed, total)
+            for rel in local:
                 if rel not in remote:
                     self.put_file(self._local_path(rel))
                     uploaded += 1
+                processed += 1
+                if progress:
+                    progress("merge", processed, total)
             return SyncResult(uploaded=uploaded, downloaded=downloaded, conflicts=conflicts)
 
 
@@ -745,18 +754,61 @@ class S3Storage(S3StorageCore):
                               downloaded=downloaded)
 
     def startup_merge(self) -> SyncResult:
-        # Сначала применяем журнал прошлого запуска, чтобы ожидающий DELETE не был
-        # ошибочно восстановлен обратно из ещё не очищенного S3.
-        self.flush_outbox(force=True, raise_errors=True)
-        result = super().startup_merge()
-        # Reconcile создаёт/проверяет manifest после безопасного merge.
-        reconciled = self.reconcile_now()
-        return SyncResult(
-            uploaded=result.uploaded + reconciled.uploaded,
-            deleted=reconciled.deleted,
-            downloaded=result.downloaded + reconciled.downloaded,
-            conflicts=result.conflicts,
-        )
+        """Фоновая startup-сверка с безопасным статусом и прогрессом."""
+        started = self._now()
+        last_report = 0.0
+        progress_state = {"current": 0, "total": 1}
+
+        def report(phase: str, current: int, total: int) -> None:
+            nonlocal last_report
+            progress_state.update(current=current, total=max(total, 1))
+            now = time.monotonic()
+            if current == 0 or current >= total or now - last_report >= 0.5:
+                last_report = now
+                self._write_status(connection="initializing", startup={
+                    "state": "running", "phase": phase, "current": current,
+                    "total": max(total, 1), "started_at": started,
+                })
+
+        self._write_status(connection="initializing", last_error="", startup={
+            "state": "running", "phase": "outbox", "current": 0,
+            "total": 1, "started_at": started,
+        })
+        try:
+            # Сначала применяем журнал прошлого запуска, чтобы ожидающий DELETE
+            # не был восстановлен обратно из ещё не очищенного S3.
+            self.flush_outbox(force=True, raise_errors=True)
+            result = super().startup_merge(progress=report)
+            self._write_status(connection="initializing", startup={
+                "state": "running", "phase": "reconcile",
+                "current": progress_state["total"], "total": progress_state["total"],
+                "started_at": started,
+            })
+            reconciled = self.reconcile_now()
+            combined = SyncResult(
+                uploaded=result.uploaded + reconciled.uploaded,
+                deleted=reconciled.deleted,
+                downloaded=result.downloaded + reconciled.downloaded,
+                conflicts=result.conflicts,
+            )
+            finished = self._now()
+            self._write_status(connection="ok", last_success=finished, last_error="", startup={
+                "state": "complete", "phase": "complete",
+                "current": progress_state["total"], "total": progress_state["total"],
+                "started_at": started, "finished_at": finished,
+                "result": {"uploaded": combined.uploaded, "deleted": combined.deleted,
+                           "downloaded": combined.downloaded, "conflicts": combined.conflicts},
+            })
+            return combined
+        except Exception as exc:
+            safe = str(exc) if isinstance(exc, StorageError) else type(exc).__name__
+            self._write_status(connection="error", last_error=safe, startup={
+                "state": "error", "phase": "error",
+                "current": progress_state["current"], "total": progress_state["total"],
+                "started_at": started, "finished_at": self._now(), "error": safe,
+            })
+            raise
+
 
     def maintenance_loop(self, action_file: Path) -> None:
         """Retry outbox, периодическая сверка и команды из dashboard."""
