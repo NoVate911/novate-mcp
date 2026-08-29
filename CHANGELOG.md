@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `deploy.sh` ограничивает время Cosign/readiness/smoke-проверок, закрывает stdin Docker exec и гарантированно завершается после успешного deploy.
+
 - Исправлены rollback-теги `deploy.sh`: timestamp в имени Docker repository теперь всегда в нижнем регистре.
 
 - Caddy больше не блокируется состоянием MCP; стартовый период MCP healthcheck увеличен до 5 минут для длительной S3 startup-синхронизации.

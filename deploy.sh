@@ -16,7 +16,7 @@ ENV_FILE="$BASE_DIR/.env"
 ENV_BACKUP="$STATE_DIR/env-$STAMP"
 ROLLBACK_FILE="$STATE_DIR/rollback-$STAMP.yml"
 SERVICES=(mcp dashboard backup caddy)
-COSIGN_IMAGE="${NOVATE_COSIGN_IMAGE:-gcr.io/projectsigstore/cosign/cosign:v3.1.3}"
+COSIGN_IMAGE="${NOVATE_COSIGN_IMAGE:-ghcr.io/sigstore/cosign/cosign:v3.1.3}"
 VERIFY_SIGNATURES="${NOVATE_VERIFY_SIGNATURES:-}"
 if [[ -z "$VERIFY_SIGNATURES" ]]; then
   VERIFY_SIGNATURES="$(awk -F= '/^NOVATE_VERIFY_SIGNATURES=/{print $2; exit}' "$ENV_FILE" 2>/dev/null || true)"
@@ -76,7 +76,13 @@ verify_signatures() {
     digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$ref" 2>/dev/null || true)"
     [[ "$digest_ref" == *@sha256:* ]] || { echo "Не найден digest для $ref" >&2; return 1; }
     echo "Проверка Cosign-подписи: $digest_ref"
-    docker run --rm "$COSIGN_IMAGE" verify       --certificate-identity-regexp "$identity"       --certificate-oidc-issuer "https://token.actions.githubusercontent.com"       "$digest_ref" >/dev/null
+    if ! timeout 120 docker run --rm "$COSIGN_IMAGE" verify \
+      --certificate-identity-regexp "$identity" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      "$digest_ref" >/dev/null </dev/null; then
+      echo "Cosign-проверка не пройдена для $digest_ref" >&2
+      return 1
+    fi
   done
 }
 
@@ -91,14 +97,12 @@ wait_until_ready() {
       health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || true)"
       [[ "$state" == "true" && ( "$health" == "healthy" || "$health" == "none" ) ]] || all_ok=0
     done
-    if (( all_ok )) && docker compose exec -T mcp \
-      python healthcheck.py http http://127.0.0.1:8002/health/ready 200 >/dev/null 2>&1; then
-      if docker compose exec -T mcp python - <<'PY' >/dev/null 2>&1
-import urllib.request
-with urllib.request.urlopen("http://dashboard:8001/login", timeout=5) as response:
-    assert response.status == 200
-PY
-      then
+    if (( all_ok )) && timeout 15 docker compose exec -T mcp \
+      python healthcheck.py http http://127.0.0.1:8002/health/ready 200 \
+      >/dev/null 2>&1 </dev/null; then
+      if timeout 15 docker compose exec -T mcp python -c \
+        'import urllib.request; response = urllib.request.urlopen("http://dashboard:8001/login", timeout=5); assert response.status == 200; response.close()' \
+        >/dev/null 2>&1 </dev/null; then
         return 0
       fi
     fi
@@ -135,3 +139,6 @@ fi
 rm -f "$ROLLBACK_FILE"
 find "$STATE_DIR" -type f -name 'env-*' -mtime +30 -delete 2>/dev/null || true
 echo "Deploy $TARGET_VERSION завершён: контейнеры healthy, MCP readiness и dashboard smoke-test пройдены."
+cleanup
+trap - EXIT
+exit 0
