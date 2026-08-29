@@ -6,8 +6,10 @@
  *   GET  /                  — список проектов + статистика (нужен вход)
  *   GET  /browse/<путь>     — просмотр папки (нужен вход)
  *   GET  /download/<путь>   — скачивание файла (нужен вход)
+ *   GET  /download-project/<имя> — архивирование и скачивание проекта (нужен вход)
  *   GET  /backups           — бэкапы: статус, архивы, запуск вручную (нужен вход)
  *   POST /backup-now        — запустить бэкап вне расписания (нужен вход)
+ *   POST /backup-upload     — загрузить и проверить локальный бэкап (нужен вход)
  *   POST /restore           — восстановить проекты из архива (нужен вход)
  *   GET  /backup-file/<имя> — скачивание архива бэкапа (нужен вход)
  *   GET  /settings          — настройки (нужен вход)
@@ -23,11 +25,14 @@ import {
   createHash, createHmac, createPublicKey, randomBytes,
   timingSafeEqual, verify as cryptoVerify,
 } from "node:crypto";
-import { readdirSync, readFileSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, statfsSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import * as settings from "./settings.ts";
-import { esc, fmtTime, header, humanSize, loginPage, mask, shell } from "./ui.ts";
+import { esc, fmtTime, header, humanSize, loginPage, mask, shell, toast } from "./ui.ts";
 
 const DATA_DIR = resolve(process.env.MCP_DATA_DIR || "/data");
 const CONFIG_DIR = process.env.CONFIG_DIR || "/config";
@@ -36,6 +41,8 @@ const COOKIE_NAME = "dash_auth";
 const COOKIE_TTL = 7 * 24 * 3600;
 const STATE_COOKIE = "oauth_state";
 const STATE_TTL = 600;
+const MAX_BACKUP_UPLOAD_BYTES = 512 * 1024 * 1024;
+const BACKUP_NAME_RE = /^novate-backup-\d{8}-\d{6}(?:-pre-restore)?\.tar\.gz(?:\.enc)?$/;
 
 // Telegram OpenID Connect (https://core.telegram.org/widgets/login)
 const TG_AUTH_URL = "https://oauth.telegram.org/auth";
@@ -359,8 +366,11 @@ function walk(dir: string): { files: number; size: number; latest: number } {
 
 // ---------- страницы ----------
 
-function indexPage(user: string): string {
+function indexPage(url: URL, user: string): string {
   const domain = settings.get("DOMAIN");
+  const notification = url.searchParams.get("error") === "project-archive"
+    ? toast("Не удалось подготовить архив проекта.", "error")
+    : "";
   const cards: string[] = [];
   let totalSize = 0, totalFiles = 0;
   let names: string[] = [];
@@ -372,17 +382,21 @@ function indexPage(user: string): string {
   } catch { /* пусто */ }
 
   names.forEach((name, i) => {
-    const st = walk(DATA_DIR + "/" + name);
+    const projectDir = DATA_DIR + "/" + name;
+    const st = walk(projectDir);
     totalSize += st.size; totalFiles += st.files;
-    const pub = domain
-      ? `<a class="tag" href="` + "https://" + esc(domain) + `/projects/${encodeURIComponent(name)}/" target="_blank" rel="noopener">открыть сайт ↗</a>`
+    let hasIndex = false;
+    try { hasIndex = statSync(projectDir + "/index.html").isFile(); } catch { /* нет index.html */ }
+    const openSite = domain && hasIndex
+      ? `<a class="tag" href="` + "https://" + esc(domain) + `/projects/${encodeURIComponent(name)}/" target="_blank" rel="noopener">Открыть сайт ↗</a>`
       : "";
+    const download = `<a class="tag" href="/download-project/${encodeURIComponent(name)}">Скачать</a>`;
     cards.push(
       `<div class="card rise" style="animation-delay:${120 + i * 70}ms">`
       + `<a class="main" href="/browse/${encodeURIComponent(name)}">`
       + `<div class="name">📁 ${esc(name)}</div>`
       + `<div class="meta">${st.files} файлов · ${humanSize(st.size)} · изменён ${fmtTime(st.latest)}</div>`
-      + `</a><div>${pub}<span class="tag">${humanSize(st.size)}</span></div></div>`,
+      + `</a><div class="card-actions">${openSite}${download}<span class="tag">${humanSize(st.size)}</span></div></div>`,
     );
   });
 
@@ -409,7 +423,7 @@ function indexPage(user: string): string {
     : `<div class="empty rise">Проектов пока нет.<br>Попроси своего ИИ-агента что-нибудь создать!</div>`;
 
   return shell("NoVate MCP — проекты",
-    header("projects", user) + `<div class="wrap">${stats}${body}</div>`);
+    header("projects", user) + notification + `<div class="wrap">${stats}${body}</div>`);
 }
 
 function browsePage(rel: string, user: string): Response {
@@ -458,6 +472,91 @@ function browsePage(rel: string, user: string): Response {
     + `<tbody>${table}</tbody></table></div></div>`));
 }
 
+// ---------- архивы проектов и проверка бэкапов ----------
+
+type ProcessResult = { code: number; stdout: string; stderr: string };
+
+async function runProcess(args: string[]): Promise<ProcessResult> {
+  const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
+function streamTemporaryFile(path: string, directory: string): ReadableStream<Uint8Array> {
+  const reader = Bun.file(path).stream().getReader();
+  let cleaned = false;
+  const cleanup = (): void => {
+    if (cleaned) return;
+    cleaned = true;
+    rmSync(directory, { recursive: true, force: true });
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller): Promise<void> {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) { cleanup(); controller.close(); return; }
+        controller.enqueue(chunk.value);
+      } catch (err) {
+        cleanup();
+        controller.error(err);
+      }
+    },
+    async cancel(): Promise<void> {
+      try { await reader.cancel(); } finally { cleanup(); }
+    },
+  });
+}
+
+async function validateBackupArchive(upload: string, encrypted: boolean): Promise<string | null> {
+  const workDir = mkdtempSync(join(os.tmpdir(), "novate-backup-check-"));
+  const archive = encrypted ? join(workDir, "backup.tar.gz") : upload;
+  try {
+    if (encrypted) {
+      const password = settings.get("BACKUP_PASSWORD");
+      if (!password) return "Для проверки зашифрованного бэкапа сначала задайте BACKUP_PASSWORD.";
+      const decrypted = await runProcess([
+        "openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2",
+        "-pass", "pass:" + password, "-in", upload, "-out", archive,
+      ]);
+      if (decrypted.code !== 0) return "Не удалось расшифровать бэкап текущим BACKUP_PASSWORD.";
+    }
+
+    const listed = await runProcess(["tar", "-tzf", archive]);
+    if (listed.code !== 0) return "Файл не является корректным tar.gz-архивом.";
+    const names = listed.stdout.split("\n").filter(Boolean);
+    if (!names.length) return "Архив пуст.";
+    let hasProjects = false;
+    for (const raw of names) {
+      const name = raw.replace(/^\.\//, "");
+      const parts = name.split("/");
+      if (name.startsWith("/") || parts.includes("..")) return "Архив содержит небезопасные пути.";
+      if (name === "projects" || name === "projects/" || name.startsWith("projects/")) {
+        hasProjects = true;
+        continue;
+      }
+      if (name === "dashboard-data/overrides.json") continue;
+      return "Структура архива не соответствует бэкапу NoVate MCP.";
+    }
+    if (!hasProjects) return "В архиве отсутствует корневая папка projects/.";
+
+    const verbose = await runProcess(["tar", "-tvzf", archive]);
+    if (verbose.code !== 0) return "Не удалось проверить содержимое архива.";
+    for (const line of verbose.stdout.split("\n").filter(Boolean)) {
+      const type = line[0];
+      if (type !== "-" && type !== "d") {
+        return "Архив содержит ссылки или специальные файлы и отклонён из соображений безопасности.";
+      }
+    }
+    return null;
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 // ---------- бэкапы ----------
 
 type BackupStatus = {
@@ -477,9 +576,13 @@ function backupStatus(): BackupStatus | null {
 function backupsPage(url: URL, user: string): string {
   let flash = "";
   if (url.searchParams.has("started")) {
-    flash = `<div class="note ok rise">Бэкап запущен — архив появится в списке и прилетит в Telegram в течение минуты.</div>`;
+    flash = toast("Бэкап запущен — архив появится в списке и Telegram в течение минуты.", "success");
   } else if (url.searchParams.has("restore")) {
-    flash = `<div class="note ok rise">Восстановление запущено — перед ним автоматически делается страховочный бэкап. Статус появится ниже в течение минуты.</div>`;
+    flash = toast("Восстановление запущено. Перед ним создаётся страховочный бэкап.", "success");
+  } else if (url.searchParams.has("uploaded")) {
+    flash = toast("Бэкап проверен и загружен.", "success");
+  } else if (url.searchParams.has("upload-error")) {
+    flash = toast(url.searchParams.get("upload-error") || "Не удалось загрузить бэкап.", "error");
   }
   const confirmName = url.searchParams.get("confirm") || "";
   if (confirmName && /^[\w.-]+\.tar\.gz(\.enc)?$/.test(confirmName)) {
@@ -546,9 +649,13 @@ function backupsPage(url: URL, user: string): string {
   }
 
   return shell("NoVate MCP — бэкапы",
-    header("backups", user) + `<div class="wrap">${flash}${statusHtml}`
-    + `<form method="post" action="/backup-now" class="rise">`
+    header("backups", user) + flash + `<div class="wrap">${statusHtml}`
+    + `<div class="backup-actions rise"><form method="post" action="/backup-now">`
     + `<button class="btn" type="submit">Сделать бэкап сейчас</button></form>`
+    + `<form method="post" action="/backup-upload" enctype="multipart/form-data" class="upload-form">`
+    + `<label class="btn gray" for="backup-upload">Загрузить бэкап</label>`
+    + `<input id="backup-upload" type="file" name="backup" accept=".tar.gz,.enc" required>`
+    + `<button class="btn" type="submit">Загрузить</button></form></div>`
     + `<div class="panel rise" style="margin-top:24px"><table>`
     + `<thead><tr><th>Архив</th><th>Размер</th><th>Дата</th><th></th></tr></thead>`
     + `<tbody>${rows}</tbody></table></div>`
@@ -556,15 +663,16 @@ function backupsPage(url: URL, user: string): string {
     + `Локально хранятся последние BACKUP_KEEP копий (папка backups на сервере), `
     + `каждый архив отправляется в Telegram (TG_BOT_TOKEN → TG_CHAT_ID). `
     + `Если задан BACKUP_PASSWORD — архивы шифруются (AES-256, файлы .enc). `
+    + `Загружаемые архивы проверяются по имени, формату, структуре и безопасности содержимого. `
     + `«Восстановить» перезаписывает проекты из выбранного архива.</div></div>`);
 }
 
 function settingsPage(url: URL, user: string): string {
   let flash = "";
   if (url.searchParams.has("saved")) {
-    flash = `<div class="note ok rise">Сохранено: значение из панели теперь имеет приоритет над .env.</div>`;
+    flash = toast("Сохранено: значение из панели теперь имеет приоритет над .env.", "success");
   } else if (url.searchParams.has("reset")) {
-    flash = `<div class="note ok rise">Переопределение сброшено — снова действует значение из .env.</div>`;
+    flash = toast("Переопределение сброшено — снова действует значение из .env.", "success");
   }
 
   const rows: string[] = [];
@@ -609,7 +717,7 @@ function settingsPage(url: URL, user: string): string {
     + `Настройки Telegram и бэкапов применяются в течение минуты, без перезапуска.</div>`;
 
   return shell("NoVate MCP — настройки",
-    header("settings", user) + `<div class="wrap">${flash}${noteBlock}`
+    header("settings", user) + flash + `<div class="wrap">${noteBlock}`
     + `<div class="panel rise"><table><tbody>${rows.join("")}</tbody></table></div></div>`);
 }
 
@@ -723,12 +831,48 @@ async function route(req: Request): Promise<Response> {
   const session = sessionOf(req);
   if (!session) return redirect("/login");
 
-  if (method === "GET" && path === "/") return html(indexPage(session.name));
+  if (method === "GET" && path === "/") return html(indexPage(url, session.name));
 
   if (method === "GET" && path.startsWith("/browse/")) {
     let rel = "";
     try { rel = decodeURIComponent(path.slice("/browse/".length)); } catch { return redirect("/"); }
     return browsePage(rel, session.name);
+  }
+
+  if (method === "GET" && path.startsWith("/download-project/")) {
+    let name = "";
+    try { name = decodeURIComponent(path.slice("/download-project/".length)); } catch { return redirect("/"); }
+    if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") return redirect("/");
+    const target = safePath(name);
+    if (!target) return redirect("/");
+    try {
+      if (!statSync(target).isDirectory()) return redirect("/");
+    } catch {
+      return redirect("/");
+    }
+
+    const tempDir = mkdtempSync(join(os.tmpdir(), "novate-project-download-"));
+    const archive = join(tempDir, "project.tar.gz");
+    try {
+      const packed = await runProcess(["tar", "-czf", archive, "-C", DATA_DIR, "--", name]);
+      if (packed.code !== 0) {
+        console.error("Не удалось архивировать проект:", packed.stderr);
+        rmSync(tempDir, { recursive: true, force: true });
+        return redirect("/?error=project-archive");
+      }
+      const downloadName = name + ".tar.gz";
+      return new Response(streamTemporaryFile(archive, tempDir), {
+        headers: {
+          "Content-Type": "application/gzip",
+          "Content-Disposition":
+            `attachment; filename="${downloadName.replace(/[^\x20-\x7E]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
+        },
+      });
+    } catch (err) {
+      rmSync(tempDir, { recursive: true, force: true });
+      console.error("Не удалось подготовить архив проекта:", err);
+      return redirect("/?error=project-archive");
+    }
   }
 
   if (method === "GET" && path.startsWith("/download/")) {
@@ -761,6 +905,53 @@ async function route(req: Request): Promise<Response> {
       console.error("Не удалось создать триггер бэкапа:", err);
     }
     return redirect("/backups?started=1");
+  }
+
+  if (method === "POST" && path === "/backup-upload") {
+    const contentLength = Number(req.headers.get("content-length") || "0");
+    if (contentLength > MAX_BACKUP_UPLOAD_BYTES + 1024 * 1024) {
+      return redirect("/backups?upload-error=" + encodeURIComponent("Файл слишком большой (лимит 512 МБ)."));
+    }
+    const tempDir = mkdtempSync(join(os.tmpdir(), "novate-backup-upload-"));
+    try {
+      const form = await req.formData();
+      const file = form.get("backup");
+      if (!(file instanceof File) || !file.size) {
+        return redirect("/backups?upload-error=" + encodeURIComponent("Выберите непустой файл бэкапа."));
+      }
+      if (file.size > MAX_BACKUP_UPLOAD_BYTES) {
+        return redirect("/backups?upload-error=" + encodeURIComponent("Файл слишком большой (лимит 512 МБ)."));
+      }
+      const name = basename(file.name);
+      if (name !== file.name || !BACKUP_NAME_RE.test(name)) {
+        return redirect("/backups?upload-error=" + encodeURIComponent(
+          "Имя файла не соответствует бэкапу NoVate MCP (novate-backup-YYYYMMDD-HHMMSS.tar.gz[.enc]).",
+        ));
+      }
+      const upload = join(tempDir, name);
+      await Bun.write(upload, file);
+      const validationError = await validateBackupArchive(upload, name.endsWith(".enc"));
+      if (validationError) {
+        return redirect("/backups?upload-error=" + encodeURIComponent(validationError));
+      }
+      const target = resolve(BACKUP_DIR, name);
+      if (!target.startsWith(BACKUP_DIR + "/")) {
+        return redirect("/backups?upload-error=" + encodeURIComponent("Недопустимое имя файла."));
+      }
+      try {
+        if (statSync(target).isFile()) {
+          return redirect("/backups?upload-error=" + encodeURIComponent("Бэкап с таким именем уже существует."));
+        }
+      } catch { /* имя свободно */ }
+      copyFileSync(upload, target);
+      tgNotify("🗄 Загружен и проверен бэкап " + name + " (пользователь " + session.name + ")");
+      return redirect("/backups?uploaded=1");
+    } catch (err) {
+      console.error("Не удалось загрузить бэкап:", err);
+      return redirect("/backups?upload-error=" + encodeURIComponent("Не удалось загрузить или проверить файл."));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   }
 
   if (method === "POST" && path === "/restore") {

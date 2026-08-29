@@ -27,8 +27,8 @@ services:
       - ${PROJECTS_DIR:-./projects}:/data:ro
       # Свои настройки (overrides.json) панель может писать
       - ./dashboard-data:/config
-      # Архивы бэкапов — только чтение (пишет их сервис backup)
-      - ./backups:/backups:ro
+      # Архивы бэкапов: чтение + запись только для проверенных загрузок из панели
+      - ./backups:/backups
       # Время внутри контейнера = как на хосте
       - /etc/localtime:/etc/localtime:ro
     networks:

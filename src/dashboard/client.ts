@@ -1,8 +1,6 @@
 /**
  * Клиентская логика панели «NoVate MCP».
  * Компилируется в public/client.js при сборке образа: bun build --minify.
- * Сознательно крошечная: вся анимация — в CSS, здесь только то,
- * что CSS не умеет.
  */
 
 // Плавный счётчик для числовых статистик (ease-out cubic)
@@ -20,10 +18,17 @@ document.querySelectorAll<HTMLElement>("[data-count]").forEach((el) => {
   requestAnimationFrame(tick);
 });
 
-// Уведомления сами плавно исчезают через 2.6 секунды
-const flash = document.querySelector<HTMLElement>(".note.ok");
-if (flash) {
-  flash.style.transition = "opacity .5s ease";
-  setTimeout(() => { flash.style.opacity = "0"; }, 2600);
-  setTimeout(() => { flash.remove(); }, 3200);
-}
+// Все уведомления показываются тостами и удаляются после анимации.
+document.querySelectorAll<HTMLElement>("[data-toast]").forEach((el) => {
+  let timer = 0;
+  const close = (): void => {
+    window.clearTimeout(timer);
+    if (el.classList.contains("toast-leave")) return;
+    el.classList.add("toast-leave");
+    window.setTimeout(() => el.closest(".toast-stack")?.remove(), 240);
+  };
+  timer = window.setTimeout(close, 5000);
+  el.querySelector<HTMLButtonElement>(".toast-close")?.addEventListener("click", close);
+  el.addEventListener("mouseenter", () => window.clearTimeout(timer));
+  el.addEventListener("mouseleave", () => { timer = window.setTimeout(close, 1800); });
+});

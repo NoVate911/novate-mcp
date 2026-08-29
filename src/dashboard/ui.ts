@@ -34,6 +34,15 @@ export function fmtTime(ms: number): string {
   return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+export type ToastKind = "success" | "error" | "info";
+
+/** Всплывающее уведомление в правом верхнем углу. */
+export function toast(message: string, kind: ToastKind = "info"): string {
+  return `<div class="toast-stack"><div class="toast toast-${kind}" data-toast role="status">`
+    + `<span>${esc(message)}</span><button class="toast-close" type="button" aria-label="Закрыть">×</button>`
+    + `<div class="toast-progress"></div></div></div>`;
+}
+
 const CSS = `
 :root {
   --bg: #0b0e11;
@@ -120,6 +129,8 @@ h1 a { color: inherit; text-decoration: none; }
 .card a.main { color: inherit; text-decoration: none; flex: 1; min-width: 0; }
 .card .name { font-size: 16px; font-weight: 600; }
 .card .meta { color: var(--muted); font-size: 13px; margin-top: 5px; }
+.card-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.card-actions .tag { margin-left: 0; }
 .tag {
   display: inline-block; background: var(--surface-2); border: 1px solid var(--border);
   color: var(--muted); border-radius: 9px; padding: 5px 12px; font-size: 13px;
@@ -170,6 +181,46 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   color: var(--muted); margin-bottom: 24px; line-height: 1.65;
 }
 .note.ok { color: var(--accent); border-left-color: var(--accent); }
+.backup-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.upload-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.upload-form input[type=file] {
+  max-width: 260px; color: var(--muted); font-size: 13px;
+  -webkit-user-select: text; -moz-user-select: text; user-select: text;
+}
+.upload-form input[type=file]::file-selector-button { display: none; }
+
+/* ---- тост-уведомления ---- */
+.toast-stack {
+  position: fixed; z-index: 100; top: 82px; right: 20px; width: min(390px, calc(100vw - 40px));
+  pointer-events: none;
+}
+.toast {
+  position: relative; overflow: hidden; pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 12px;
+  background: rgba(17, 21, 27, .97); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 12px; padding: 14px 42px 16px 16px; color: var(--text);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .45); line-height: 1.45; font-size: 14px;
+  animation: toast-in .28s cubic-bezier(.2,.7,.3,1) both;
+}
+.toast-success { border-left-color: var(--accent); }
+.toast-error { border-left-color: #ff5a6e; }
+.toast-info { border-left-color: #58a6ff; }
+.toast-close {
+  position: absolute; top: 7px; right: 8px; width: 28px; height: 28px; border: 0;
+  background: transparent; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1;
+}
+.toast-close:hover { color: var(--text); }
+.toast-progress {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: currentColor;
+  color: var(--accent); transform-origin: left; animation: toast-progress 4.8s linear forwards; opacity: .75;
+}
+.toast-error .toast-progress { color: #ff5a6e; }
+.toast-info .toast-progress { color: #58a6ff; }
+.toast.toast-leave { animation: toast-out .22s ease forwards; }
+@keyframes toast-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+@keyframes toast-out { to { opacity: 0; transform: translateX(18px); } }
+@keyframes toast-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
 .empty { text-align: center; color: var(--muted); padding: 70px 0; line-height: 1.9; }
 
 /* ---- поля ввода ---- */
@@ -251,8 +302,8 @@ export function header(active: string, user = ""): string {
 
 /** Страница входа (только через Telegram OIDC). */
 export function loginPage(error: string | null): string {
-  const err = error ? `<div class="err">${esc(error)}</div>` : "";
-  return shell("NoVate MCP — вход", `<div class="login-wrap"><div class="glow"></div>`
+  const err = error ? toast(error, "error") : "";
+  return shell("NoVate MCP — вход", err + `<div class="login-wrap"><div class="glow"></div>`
     + `<div class="login-card">`
     + `<h1>NoVate <span>MCP</span></h1>`
     + `<p>Панель управления проектами.<br>Вход — через Telegram<br>для пользователей из списка разрешённых.</p>`
