@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `docker compose up` в deploy и rollback теперь запускается без интерактивного stdin, с plain-выводом и жёстким таймаутом `NOVATE_COMPOSE_UP_TIMEOUT`.
+
 - Ожидание после `docker compose up` теперь выводит причины блокировки и оставшееся время; по таймауту выполняется rollback вместо визуального «зависания».
 
 - `deploy.sh` ограничивает время Cosign/readiness/smoke-проверок, закрывает stdin Docker exec и гарантированно завершается после успешного deploy.

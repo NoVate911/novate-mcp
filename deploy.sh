@@ -9,6 +9,9 @@ if [[ -z "$TIMEOUT" && -f "$BASE_DIR/.env" ]]; then
   TIMEOUT="$(awk -F= '/^NOVATE_DEPLOY_TIMEOUT=/{print $2; exit}' "$BASE_DIR/.env")"
 fi
 TIMEOUT="${TIMEOUT:-600}"
+COMPOSE_UP_TIMEOUT="${NOVATE_COMPOSE_UP_TIMEOUT:-180}"
+export COMPOSE_ANSI=never
+export COMPOSE_PROGRESS=plain
 LOCK_DIR="$BASE_DIR/.deploy.lock"
 STATE_DIR="$BASE_DIR/.deploy"
 STAMP="$(date -u +%Y%m%dt%H%M%Sz)"
@@ -29,6 +32,7 @@ SNAPSHOT_COUNT=0
   exit 2
 }
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Ошибка: NOVATE_DEPLOY_TIMEOUT должен быть числом секунд." >&2; exit 2; }
+[[ "$COMPOSE_UP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Ошибка: NOVATE_COMPOSE_UP_TIMEOUT должен быть числом секунд." >&2; exit 2; }
 [[ -f "$ENV_FILE" ]] || { echo "Ошибка: не найден $ENV_FILE" >&2; exit 2; }
 mkdir -p "$STATE_DIR"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -144,8 +148,13 @@ rollback() {
   echo "Deploy не прошёл проверки. Выполняется автоматический rollback..." >&2
   cp "$ENV_BACKUP" "$ENV_FILE"
   if (( SNAPSHOT_COUNT > 0 )); then
-    docker compose -f docker-compose.yml -f "$ROLLBACK_FILE" up -d --force-recreate --remove-orphans
-    echo "Rollback завершён: восстановлены прежние .env и локальные снимки образов." >&2
+    if timeout --foreground "$COMPOSE_UP_TIMEOUT" docker compose \
+      -f docker-compose.yml -f "$ROLLBACK_FILE" \
+      up -d --force-recreate --remove-orphans </dev/null; then
+      echo "Rollback завершён: восстановлены прежние .env и локальные снимки образов." >&2
+    else
+      echo "ОШИБКА: docker compose не завершил rollback за ${COMPOSE_UP_TIMEOUT} сек." >&2
+    fi
   else
     echo "Rollback образов невозможен: до deploy не было запущенных контейнеров." >&2
   fi
@@ -167,7 +176,7 @@ echo "Проверка конфигурации для версии $TARGET_VERS
 if ! docker compose config --quiet \
   || ! docker compose pull \
   || ! verify_signatures \
-  || ! docker compose up -d --remove-orphans \
+  || ! timeout --foreground "$COMPOSE_UP_TIMEOUT" docker compose up -d --remove-orphans </dev/null \
   || ! wait_until_ready; then
   rollback
   exit 1
