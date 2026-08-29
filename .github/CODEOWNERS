@@ -1,0 +1,12 @@
+# Владельцы по умолчанию
+* @NoVate911
+
+# Критичные компоненты
+/.github/ @NoVate911
+/Dockerfile @NoVate911
+/docker-compose.yml @NoVate911
+/install.sh @NoVate911
+/src/server.py @NoVate911
+/src/backup.py @NoVate911
+/src/storage.py @NoVate911
+/src/dashboard/ @NoVate911

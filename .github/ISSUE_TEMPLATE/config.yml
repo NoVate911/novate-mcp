@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Сообщить об уязвимости
+    url: https://github.com/NoVate911/novate-mcp/security/advisories/new
+    about: Отправьте приватный отчёт — не создавайте публичный Issue.
+  - name: Документация
+    url: https://github.com/NoVate911/novate-mcp#readme
+    about: Установка, настройка и диагностика.

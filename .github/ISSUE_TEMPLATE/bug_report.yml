@@ -1,0 +1,67 @@
+name: Сообщить об ошибке
+description: Воспроизводимая проблема в NoVate MCP
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за отчёт. Не публикуйте секреты. Уязвимости отправляйте приватно по SECURITY.md.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Предварительная проверка
+      options:
+        - label: Я использую актуальную версию или образ `*-latest`
+          required: true
+        - label: Я удалил токены, пароли и персональные данные
+          required: true
+        - label: Это не отчёт об уязвимости
+          required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Компонент
+      options: [MCP, Dashboard, Backup, Installer, Docker / Caddy, S3, Другое]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: Commit SHA или дата обновления образа.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      placeholder: "1. ...
+2. ...
+3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактическое поведение
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Окружение
+      description: ОС, архитектура, версии Docker/Python/Bun и способ установки.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Очищенные логи
+      render: shell

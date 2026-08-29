@@ -1,0 +1,33 @@
+name: Предложить улучшение
+description: Идея новой функции или улучшения
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какая проблема решается
+      description: Опишите сценарий и ограничение текущего поведения.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Предлагаемое решение
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативы
+  - type: dropdown
+    id: component
+    attributes:
+      label: Компонент
+      options: [MCP, Dashboard, Backup, Installer, Docker / Caddy, S3, Документация, Другое]
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Дополнительный контекст

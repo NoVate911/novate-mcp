@@ -1,10 +1,49 @@
-# Секреты и данные — никогда не пушить в репозиторий
+# Секреты и локальные настройки
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Данные сервисов — никогда не коммитить
 projects/
 sites/
 dashboard-data/
 backups/
 
-# Python-мусор
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+
+# Bun / Node.js
+node_modules/
+src/dashboard/public/
+*.tsbuildinfo
+bun.lockb
+
+# IDE и ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.temp
+.cache/
+tmp/

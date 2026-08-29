@@ -1,0 +1,15 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Новые возможности
+      labels: [enhancement, feature]
+    - title: Исправления
+      labels: [bug, fix]
+    - title: Безопасность
+      labels: [security]
+    - title: Зависимости
+      labels: [dependencies]
+    - title: Прочее
+      labels: ["*"]
