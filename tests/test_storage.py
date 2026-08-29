@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -176,6 +177,58 @@ class StorageTests(unittest.TestCase):
         (self.root / "shared.txt").unlink(); shutil.rmtree(self.root / "local")
         s3(self.root, self.fake).startup_merge()
         self.assertTrue((self.root / "cloud/index.html").is_file())
+
+
+class SlowFakeS3(FakeS3):
+    def __init__(self):
+        super().__init__()
+        self.upload_started = threading.Event()
+        self.release_upload = threading.Event()
+        self.slow_once = True
+
+    def upload_file(self, filename, bucket, key):
+        if self.slow_once:
+            self.slow_once = False
+            self.upload_started.set()
+            if not self.release_upload.wait(5):
+                raise TimeoutError("test upload gate")
+        super().upload_file(filename, bucket, key)
+
+
+class ConcurrentReconciliationTests(unittest.TestCase):
+    def test_write_during_startup_reconciliation_is_serialized_and_preserved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = SlowFakeS3()
+            fake.objects["projects/shared.txt"] = b"remote"
+            (root / "shared.txt").write_text("local-wins")
+            storage = s3(root, fake)
+            errors = []
+            reconcile = threading.Thread(target=lambda: storage.startup_merge(), daemon=True)
+            reconcile.start()
+            self.assertTrue(fake.upload_started.wait(2), "startup merge did not reach upload")
+            (root / "parallel.txt").write_text("parallel-write")
+            writer = threading.Thread(
+                target=lambda: self._write(storage, root / "parallel.txt", errors), daemon=True,
+            )
+            writer.start()
+            self.assertTrue(writer.is_alive(), "write should wait on reconciliation lock")
+            fake.release_upload.set()
+            reconcile.join(5); writer.join(5)
+            self.assertFalse(reconcile.is_alive())
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(fake.objects["projects/shared.txt"], b"local-wins")
+            self.assertEqual(fake.objects["projects/parallel.txt"], b"parallel-write")
+            status = json.loads(storage.status_file.read_text())
+            self.assertEqual(status["startup"]["state"], "complete")
+
+    @staticmethod
+    def _write(storage, path, errors):
+        try:
+            storage.put_file(path)
+        except Exception as exc:
+            errors.append(exc)
 
 
 class McpToolIntegrationTests(unittest.TestCase):

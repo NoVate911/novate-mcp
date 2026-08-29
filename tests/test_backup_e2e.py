@@ -61,6 +61,10 @@ class BackupRestoreE2ETests(unittest.TestCase):
         status = json.loads(backup.STATE_FILE.read_text(encoding="utf-8"))
         archive = self.archives / status["file"]
         self.assertTrue(archive.is_file())
+        self.assertEqual(status["verification"]["state"], "ok")
+        drill = json.loads((self.archives / ".restore-drill.json").read_text())
+        self.assertEqual(drill["state"], "ok")
+        self.assertEqual(drill["files"], status["files"])
         self.assertEqual(archive.name.endswith(".enc"), encrypted)
 
         (self.projects / "alpha" / "index.html").write_text("corrupted", encoding="utf-8")

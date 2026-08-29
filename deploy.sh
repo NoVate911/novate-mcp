@@ -16,6 +16,12 @@ ENV_FILE="$BASE_DIR/.env"
 ENV_BACKUP="$STATE_DIR/env-$STAMP"
 ROLLBACK_FILE="$STATE_DIR/rollback-$STAMP.yml"
 SERVICES=(mcp dashboard backup caddy)
+COSIGN_IMAGE="${NOVATE_COSIGN_IMAGE:-gcr.io/projectsigstore/cosign/cosign:v3.1.3}"
+VERIFY_SIGNATURES="${NOVATE_VERIFY_SIGNATURES:-}"
+if [[ -z "$VERIFY_SIGNATURES" ]]; then
+  VERIFY_SIGNATURES="$(awk -F= '/^NOVATE_VERIFY_SIGNATURES=/{print $2; exit}' "$ENV_FILE" 2>/dev/null || true)"
+fi
+VERIFY_SIGNATURES="${VERIFY_SIGNATURES:-true}"
 SNAPSHOT_COUNT=0
 
 [[ "$TARGET_VERSION" == "latest" || "$TARGET_VERSION" =~ ^[0-9]{2}\.(0?[1-9]|1[0-2])\.[1-9][0-9]*\.[0-9]{3}$ ]] || {
@@ -58,6 +64,19 @@ snapshot_images() {
     docker image tag "$image_id" "$tag"
     printf '  %s:\n    image: %s\n' "$service" "$tag" >> "$ROLLBACK_FILE"
     SNAPSHOT_COUNT=$((SNAPSHOT_COUNT + 1))
+  done
+}
+
+verify_signatures() {
+  [[ "$VERIFY_SIGNATURES" =~ ^(1|true|yes|on)$ ]] || { echo "ВНИМАНИЕ: проверка подписей отключена." >&2; return 0; }
+  local service ref digest_ref identity
+  identity='^https://github.com/NoVate911/novate-mcp/.github/workflows/build\.yml@refs/(heads/main|tags/[0-9].*)$'
+  for service in mcp dashboard backup; do
+    ref="ghcr.io/novate911/novate-mcp:${service}-${TARGET_VERSION}"
+    digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$ref" 2>/dev/null || true)"
+    [[ "$digest_ref" == *@sha256:* ]] || { echo "Не найден digest для $ref" >&2; return 1; }
+    echo "Проверка Cosign-подписи: $digest_ref"
+    docker run --rm "$COSIGN_IMAGE" verify       --certificate-identity-regexp "$identity"       --certificate-oidc-issuer "https://token.actions.githubusercontent.com"       "$digest_ref" >/dev/null
   done
 }
 
@@ -106,6 +125,7 @@ set_env_version "$TARGET_VERSION"
 echo "Проверка конфигурации для версии $TARGET_VERSION..."
 if ! docker compose config --quiet \
   || ! docker compose pull \
+  || ! verify_signatures \
   || ! docker compose up -d --remove-orphans \
   || ! wait_until_ready; then
   rollback

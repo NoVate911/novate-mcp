@@ -37,6 +37,7 @@ STORAGE = create_storage(DATA_DIR, validate=False, restore=False)
 STORAGE_READY = threading.Event()
 STARTUP_ERROR = ""
 HEALTH_PORT = int(os.environ.get("MCP_HEALTH_PORT", "8002"))
+MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
 
 # Публичный домен сервера (используется в описаниях инструментов)
 DOMAIN = settings.get("DOMAIN")
@@ -60,7 +61,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _mcp_listening() -> bool:
         try:
-            with socket.create_connection(("127.0.0.1", 8000), timeout=0.2):
+            with socket.create_connection(("127.0.0.1", MCP_PORT), timeout=0.2):
                 return True
         except OSError:
             return False
@@ -531,4 +532,4 @@ if __name__ == "__main__":
         threading.Thread(target=startup_reconciliation, daemon=True).start()
     else:
         STORAGE_READY.set()
-    mcp.run(transport="http", host="0.0.0.0", port=8000, path="/mcp/")
+    mcp.run(transport="http", host="0.0.0.0", port=MCP_PORT, path="/mcp/")

@@ -473,6 +473,40 @@ BACKUP_STALE_AFTER_HOURS=48
 
 История изменений ведётся в [CHANGELOG.md](CHANGELOG.md).
 
+### Защищённые опубликованные проекты
+
+Маршрут `/projects/*` больше не обслуживается Caddy напрямую. Запрос проходит через
+панель и требует действующую Telegram OIDC-сессию пользователя из
+`ALLOWED_TG_USERS`. После входа пользователь возвращается на исходный адрес проекта.
+Каталог проектов смонтирован в dashboard только для чтения, directory listing не
+публикуется, а ответы получают `Cache-Control: private`.
+
+### Мониторинг и Telegram alerts
+
+Раздел **«Мониторинг»** показывает состояние S3, размер очереди, heartbeat backup,
+результат restore drill и свободное место. Новые ошибки и последующее восстановление
+отправляются в Telegram один раз на смену состояния. Порогами управляют:
+
+- `MONITOR_INTERVAL_SECONDS`;
+- `MONITOR_BACKUP_HEARTBEAT_SECONDS`;
+- `MONITOR_S3_PENDING_LIMIT`;
+- `MONITOR_DISK_FREE_PERCENT`.
+
+### Автоматический restore drill
+
+После создания каждого архива backup-сервис расшифровывает его при необходимости и
+распаковывает во временный каталог, не изменяя рабочий `/data`. Проверяются безопасные
+пути, читаемость каждого файла и совпадение числа файлов. Результат хранится в
+`/backups/.restore-drill.json` и показывается в мониторинге. Отключение допускается
+через `BACKUP_RESTORE_DRILL=false`.
+
+### Подписи образов и SBOM
+
+GitHub Actions публикует для каждого MCP/dashboard/backup-образа SBOM и provenance,
+а digest подписывает keyless-подписью Cosign через GitHub OIDC. `deploy.sh` после
+скачивания образов проверяет digest, issuer и identity workflow до запуска
+контейнеров. Проверка включена по умолчанию параметром `NOVATE_VERIFY_SIGNATURES=true`.
+
 ### Безопасный deploy и rollback
 
 Для последней сборки или конкретного релиза используйте:
@@ -496,7 +530,7 @@ Caddy отдаёт `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noima
 > Важно: `noindex` убирает сайт из обычной поисковой выдачи, но не делает публичный
 > домен секретным. Его всё ещё можно обнаружить через DNS, журналы Certificate
 > Transparency и сетевое сканирование. Панель защищена Telegram OIDC, MCP — Bearer
-> token, а `/projects/*` доступен любому, кто знает URL. Для реальной приватности
+> token, а `/projects/*` теперь требует такую же Telegram OIDC-сессию. Для сетевой изоляции
 > добавьте VPN, IP allowlist или Cloudflare Access.
 
 <a id="updates"></a>

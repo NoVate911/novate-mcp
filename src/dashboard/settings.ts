@@ -25,6 +25,11 @@ export const DEFAULTS: Record<string, string> = {
   BACKUP_INTERVAL_HOURS: "24",
   BACKUP_KEEP: "7",
   BACKUP_PASSWORD: "",
+  BACKUP_RESTORE_DRILL: "true",
+  MONITOR_INTERVAL_SECONDS: "60",
+  MONITOR_BACKUP_HEARTBEAT_SECONDS: "180",
+  MONITOR_S3_PENDING_LIMIT: "100",
+  MONITOR_DISK_FREE_PERCENT: "10",
 };
 
 export function readOverrides(): Record<string, string> {

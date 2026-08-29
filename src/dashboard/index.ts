@@ -13,6 +13,8 @@
  *   POST /restore           — восстановить проекты из архива (нужен вход)
  *   GET  /backup-file/<имя> — скачивание архива бэкапа (нужен вход)
  *   GET  /settings          — настройки (нужен вход)
+ *   GET  /monitoring        — состояние сервисов и история алертов
+ *   GET  /projects/<путь>   — защищённая публикация проекта
  *   POST /settings          — сохранить/сбросить переопределение (нужен вход)
  *   POST /s3-action         — проверить/синхронизировать/восстановить S3
  *   GET  /login             — страница входа (кнопка «Войти через Telegram»)
@@ -33,6 +35,7 @@ import os from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import * as settings from "./settings.ts";
 import { createSessionCodec } from "./session.ts";
+import { monitoringHistory, monitoringSnapshot, startMonitoring } from "./monitor.ts";
 import { esc, fmtTime, header, humanSize, loginPage, mask, shell, toast } from "./ui.ts";
 
 const DATA_DIR = resolve(process.env.MCP_DATA_DIR || "/data");
@@ -136,6 +139,11 @@ function sessionOf(req: Request): Session | null {
   if (!data || typeof data.uid !== "string") return null;
   if (!allowedUsers().has(data.uid)) return null;
   return { uid: data.uid, name: typeof data.name === "string" ? data.name : "" };
+}
+
+function safeReturnTo(value: unknown): string {
+  const path = typeof value === "string" ? value : "";
+  return path.startsWith("/projects/") && !path.startsWith("//") ? path : "/";
 }
 
 // ---------- уведомления в Telegram ----------
@@ -713,6 +721,31 @@ function generatedSecretToast(secret: GeneratedSecret): string {
     + `<button class="toast-close" type="button" aria-label="Закрыть">×</button></div></div>`;
 }
 
+function monitoringPage(user: string): string {
+  const data = monitoringSnapshot();
+  const drill = data.restoreDrill;
+  const state = data.problems.length ? "Есть предупреждения" : "Все системы работают";
+  const cards = [
+    ["Общее состояние", state, data.problems.length ? "error" : "ok"],
+    ["Свободно на диске", `${data.disk.freePercent}%`, data.disk.freePercent < 10 ? "error" : "ok"],
+    ["Очередь S3", String(data.s3.pending || 0), data.s3.connection === "error" ? "error" : "ok"],
+    ["Restore drill", drill.state === "ok" ? "Проверка пройдена" : drill.state === "error" ? "Ошибка" : "Нет данных", drill.state === "error" ? "error" : "ok"],
+  ].map(([label, value, kind]) => `<div class="monitor-card ${kind}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`).join("");
+  const problems = data.problems.length
+    ? data.problems.map((item) => `<div class="monitor-problem"><b>${esc(item.title)}</b><span>${esc(item.detail)}</span></div>`).join("")
+    : `<div class="empty compact">Активных предупреждений нет.</div>`;
+  const events = monitoringHistory().map((item) => `<tr><td>${esc(fmtTime(Date.parse(item.time)))}</td>`
+    + `<td><span class="storage-state ${item.state === "error" ? "error" : "ok"}"><i></i>${item.state === "error" ? "Ошибка" : "Восстановлено"}</span></td>`
+    + `<td><b>${esc(item.title)}</b><br><span class="muted">${esc(item.detail)}</span></td></tr>`).join("")
+    || `<tr><td colspan="3" class="muted">Событий пока нет</td></tr>`;
+  return shell("NoVate MCP — мониторинг", header("monitoring", user)
+    + `<div class="wrap"><section class="settings-guide rise"><div class="settings-guide-icon">◉</div>`
+    + `<div class="settings-guide-copy"><span class="settings-guide-kicker">Мониторинг</span><h1>${esc(state)}</h1>`
+    + `<p>Панель контролирует S3, heartbeat бэкапов, restore drill и свободное место. Новые ошибки и восстановления отправляются в Telegram.</p></div></section>`
+    + `<div class="monitor-grid rise">${cards}</div><div class="monitor-problems rise">${problems}</div>`
+    + `<div class="panel rise"><table><thead><tr><th>Время</th><th>Состояние</th><th>Событие</th></tr></thead><tbody>${events}</tbody></table></div></div>`);
+}
+
 function settingsPage(url: URL, user: string, generated?: GeneratedSecret): string {
   let flash = generated ? generatedSecretToast(generated) : "";
   if (!generated && url.searchParams.has("saved")) {
@@ -948,6 +981,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === "GET" && path === "/auth/telegram") {
     const state = randomBytes(16).toString("hex");
+    const returnTo = safeReturnTo(url.searchParams.get("next"));
     const verifier = b64url(randomBytes(32));
     const challenge = b64url(createHash("sha256").update(verifier).digest());
     const params = new URLSearchParams({
@@ -961,7 +995,7 @@ async function route(req: Request): Promise<Response> {
     });
     return redirect(`${TG_AUTH_URL}?${params.toString()}`, {
       "Set-Cookie": cookieStr(STATE_COOKIE,
-        packSigned({ state, verifier, ts: Math.floor(Date.now() / 1000) }), STATE_TTL),
+        packSigned({ state, verifier, returnTo, ts: Math.floor(Date.now() / 1000) }), STATE_TTL),
     });
   }
 
@@ -1015,7 +1049,7 @@ async function route(req: Request): Promise<Response> {
       + `<b>Пользователь:</b> ${tgEsc(name)}
 `
       + `<b>Telegram ID:</b> <code>${tgEsc(sub)}</code>`);
-    return redirectCookies("/", [
+    return redirectCookies(safeReturnTo(saved.returnTo), [
       clearState,
       cookieStr(COOKIE_NAME, session, COOKIE_TTL),
     ]);
@@ -1027,7 +1061,12 @@ async function route(req: Request): Promise<Response> {
 
   // Дальше — только после входа
   const session = sessionOf(req);
-  if (!session) return redirect("/login");
+  if (!session) {
+    if (method === "GET" && path.startsWith("/projects/")) {
+      return redirect(`/auth/telegram?next=${encodeURIComponent(path)}`);
+    }
+    return redirect("/login");
+  }
 
   if (method === "GET" && path === "/api/storage-status") {
     let status: Record<string, unknown> = {};
@@ -1045,6 +1084,22 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === "GET" && path === "/") return html(indexPage(url, session.name));
+
+  if (method === "GET" && path.startsWith("/projects/")) {
+    let rel = "";
+    try { rel = decodeURIComponent(path.slice("/projects/".length)); } catch { return new Response("Not found", { status: 404 }); }
+    let target = safePath(rel);
+    if (!target) return new Response("Not found", { status: 404 });
+    try {
+      const info = statSync(target);
+      if (info.isDirectory()) {
+        if (!path.endsWith("/")) return redirect(path + "/");
+        target = join(target, "index.html");
+      }
+      if (!statSync(target).isFile()) return new Response("Not found", { status: 404 });
+      return new Response(Bun.file(target), { headers: { "Cache-Control": "private, no-cache" } });
+    } catch { return new Response("Not found", { status: 404 }); }
+  }
 
   if (method === "GET" && path.startsWith("/browse/")) {
     let rel = "";
@@ -1221,6 +1276,7 @@ async function route(req: Request): Promise<Response> {
     return redirect("/settings?tab=storage&s3-action=1");
   }
 
+  if (method === "GET" && path === "/monitoring") return html(monitoringPage(session.name));
   if (method === "GET" && path === "/settings") return html(settingsPage(url, session.name));
 
   if (method === "POST" && path === "/settings") {
@@ -1289,8 +1345,10 @@ if (!settings.get("DOMAIN")) {
   console.warn("ВНИМАНИЕ: DOMAIN пуст — вход через Telegram работать не будет (callback).");
 }
 
+startMonitoring(tgNotify);
+
 Bun.serve({
-  port: 8001,
+  port: Number(process.env.DASHBOARD_PORT || "8001"),
   async fetch(req: Request): Promise<Response> {
     try {
       return await route(req);

@@ -4,7 +4,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "rm -rf /tmp/novate-dashboard-check && bun build ./index.ts --outdir /tmp/novate-dashboard-check --target bun && bun build ./client.ts --outdir /tmp/novate-dashboard-check/public --target browser --minify",
-    "test": "bun test session.test.ts"
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

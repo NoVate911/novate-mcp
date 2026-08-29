@@ -20,6 +20,13 @@
 
 ### Added
 
+- Защита `/projects/*` существующей Telegram OIDC-сессией с возвратом на исходный URL после входа.
+- Страница мониторинга S3, heartbeat, restore drill и диска с дедуплицированными Telegram alerts и recovery-уведомлениями.
+- Автоматическая безопасная тестовая распаковка каждого обычного и зашифрованного бэкапа во временную папку.
+- SBOM, build provenance и keyless Cosign-подписи Docker image digest через GitHub OIDC.
+- Проверка Cosign issuer/workflow identity в `deploy.sh` до запуска новых контейнеров.
+- Полный HTTP E2E FastMCP-сессии и конкурентный тест записи во время S3 startup reconciliation.
+
 - Фоновая S3 startup-сверка с повторными попытками, отдельными liveness/readiness endpoints и живым прогрессом в панели.
 - `deploy.sh` с блокировкой параллельных запусков, проверками, smoke-test и автоматическим rollback `.env`/образов.
 - E2E-тесты AES-256-GCM session cookie: round trip, nonce, TTL, tampering, malformed data и ротация секрета.

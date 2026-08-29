@@ -173,3 +173,9 @@ if (storageProgress) {
   void refresh();
   window.setInterval(() => void refresh(), 2000);
 }
+
+
+// Мониторинг обновляется без необходимости вручную перезагружать страницу.
+if (document.querySelector(".monitor-grid")) {
+  window.setTimeout(() => window.location.reload(), 30_000);
+}

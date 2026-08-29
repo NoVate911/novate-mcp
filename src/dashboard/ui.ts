@@ -277,6 +277,17 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .storage-state.wait { color: #f4bf64; background: rgba(244, 191, 100, .09); border-color: rgba(244, 191, 100, .24); }
 .storage-state.off { color: var(--muted); }
 
+
+.monitor-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:20px 0; }
+.monitor-card { padding:16px; border:1px solid var(--border); border-radius:14px; background:var(--surface); display:flex; flex-direction:column; gap:7px; }
+.monitor-card span { color:var(--muted); font-size:12px; }
+.monitor-card b { font-size:17px; }
+.monitor-card.error { border-color:rgba(255,90,110,.45); }
+.monitor-problems { display:grid; gap:10px; margin-bottom:20px; }
+.monitor-problem { display:flex; justify-content:space-between; gap:18px; padding:13px 15px; border:1px solid rgba(255,90,110,.4); border-radius:12px; background:rgba(255,90,110,.06); }
+.monitor-problem span,.muted { color:var(--muted); }
+@media (max-width:800px){.monitor-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.monitor-problem{flex-direction:column}}
+
 .storage-progress { margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .storage-progress-head { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 9px; color: var(--muted); font-size: 12px; }
 .storage-progress-head b { color: var(--text); font-family: var(--mono); }
@@ -451,6 +462,7 @@ export function header(active: string, user = ""): string {
     + `<nav class="nav">`
     + `<a${cls("projects")} href="/">Проекты</a>`
     + `<a${cls("backups")} href="/backups">Бэкапы</a>`
+    + `<a${cls("monitoring")} href="/monitoring">Мониторинг</a>`
     + `<a${cls("settings")} href="/settings">Настройки</a>`
     + who
     + `<a href="/logout">Выйти</a>`

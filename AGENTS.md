@@ -410,4 +410,11 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   описывай это как полноценную приватность без auth/VPN/allowlist.
 - E2E-тесты session cookie обязаны проверять AES-256-GCM round trip, уникальный
   nonce, expiry/future timestamps, tampering, malformed cookie и rotation секрета.
+- `/projects/*` обслуживает dashboard только после проверки `dash_auth`; Caddy не
+  должен снова публиковать `/srv/projects` напрямую.
+- Мониторинг обязан дедуплицировать Telegram alerts и уведомлять о восстановлении.
+- Каждый новый backup должен проходить безопасный restore drill во временной папке.
+- Build публикует SBOM/provenance и keyless Cosign signature; deploy проверяет
+  issuer и workflow identity до запуска скачанных образов.
+- HTTP E2E обязан проверять initialize/list/call FastMCP-сессии и отказ без Bearer.
 - Все пользовательские изменения фиксируй в секции Unreleased CHANGELOG.md.

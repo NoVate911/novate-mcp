@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import tarfile
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -249,6 +250,60 @@ def write_status(status: dict) -> None:
         pass
 
 
+def restore_drill_enabled() -> bool:
+    return (settings.get("BACKUP_RESTORE_DRILL") or "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def verify_restore_archive(archive: Path, expected_files: int | None = None) -> dict:
+    """Расшифровать и распаковать архив во временную папку, не меняя /data."""
+    started = time.time()
+    result = {"time": datetime.now(timezone.utc).isoformat(), "file": archive.name}
+    try:
+        with tempfile.TemporaryDirectory(prefix="novate-restore-drill-") as temp_name:
+            temp = Path(temp_name)
+            work = archive
+            if archive.name.endswith(".enc"):
+                password = settings.get("BACKUP_PASSWORD")
+                if not password:
+                    raise RuntimeError("BACKUP_PASSWORD не задан для проверки зашифрованного архива")
+                work = temp / "backup.tar.gz"
+                decrypt_archive(archive, password, work)
+            extracted = 0
+            extracted_bytes = 0
+            destination = temp / "restored"
+            destination.mkdir()
+            with tarfile.open(work, "r:gz") as tar:
+                for member in tar.getmembers():
+                    normalized = member.name.replace("\\", "/").strip("/")
+                    parts = [part for part in normalized.split("/") if part]
+                    if not parts or parts[0] != "projects":
+                        continue
+                    if any(part in {".", ".."} for part in parts) or member.issym() or member.islnk():
+                        raise RuntimeError(f"небезопасный объект в архиве: {member.name}")
+                    relative = Path(*parts[1:])
+                    target = destination / relative
+                    if member.isdir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    elif member.isfile():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        source = tar.extractfile(member)
+                        if source is None:
+                            raise RuntimeError(f"не удалось прочитать {member.name}")
+                        with target.open("wb") as output:
+                            while chunk := source.read(1024 * 1024):
+                                output.write(chunk)
+                                extracted_bytes += len(chunk)
+                        extracted += 1
+            if expected_files is not None and extracted != expected_files:
+                raise RuntimeError(f"ожидалось файлов: {expected_files}, распаковано: {extracted}")
+            result.update(state="ok", files=extracted, bytes=extracted_bytes,
+                          duration_seconds=round(time.time() - started, 3))
+    except Exception as exc:
+        result.update(state="error", error=str(exc), duration_seconds=round(time.time() - started, 3))
+    (BACKUP_DIR / ".restore-drill.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
 def run_backup(reason: str) -> None:
     log(f"старт бэкапа ({reason})")
     try:
@@ -256,6 +311,12 @@ def run_backup(reason: str) -> None:
         files = count_project_files()
         archive, encrypted = maybe_encrypt(archive)
         size = archive.stat().st_size
+        if restore_drill_enabled():
+            verification = verify_restore_archive(archive, files)
+        else:
+            verification = {"state": "skipped", "file": archive.name,
+                            "time": datetime.now(timezone.utc).isoformat()}
+            (BACKUP_DIR / ".restore-drill.json").write_text(json.dumps(verification, ensure_ascii=False, indent=2), encoding="utf-8")
         prune()
         caption = (
             "🗄 <b>Резервная копия создана</b>\n\n"
@@ -263,7 +324,8 @@ def run_backup(reason: str) -> None:
             f"<b>Размер:</b> {size / 1048576:.2f} МБ\n"
             f"<b>Файлов:</b> {files}\n"
             f"<b>Запуск:</b> {html.escape(reason)}\n"
-            f"<b>Защита:</b> {'AES-256 🔐' if encrypted else 'без шифрования'}"
+            f"<b>Защита:</b> {'AES-256 🔐' if encrypted else 'без шифрования'}\n"
+            f"<b>Restore drill:</b> {'успешно ✅' if verification.get('state') == 'ok' else 'ошибка ❌' if verification.get('state') == 'error' else 'отключён'}"
         )
         if encrypted:
             caption += (
@@ -271,12 +333,19 @@ def run_backup(reason: str) -> None:
                 "<code>openssl enc -d -aes-256-cbc -pbkdf2 -in &lt;файл&gt; "
                 "-out backup.tar.gz</code>"
             )
+        if verification.get("state") == "error":
+            tg_text(
+                "🚨 <b>Проверка восстановления не пройдена</b>\n\n"
+                f"<b>Архив:</b> <code>{html.escape(archive.name)}</code>\n"
+                f"<b>Причина:</b> {html.escape(str(verification.get('error', 'unknown')))}"
+            )
         tg = send_to_telegram(archive, caption)
         log(f"готово: {archive.name} ({size} байт), telegram={tg}, encrypted={encrypted}")
         write_status({
             "time": datetime.now(timezone.utc).isoformat(),
             "file": archive.name, "size": size, "files": files,
             "telegram": tg, "reason": reason, "encrypted": encrypted,
+            "verification": verification,
         })
     except Exception as e:
         log(f"ОШИБКА: {e}")
