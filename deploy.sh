@@ -4,6 +4,7 @@ set -Eeuo pipefail
 BASE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$BASE_DIR"
 TARGET_VERSION="${1:-latest}"
+RUN_MODE="${2:-}"
 TIMEOUT="${NOVATE_DEPLOY_TIMEOUT:-}"
 if [[ -z "$TIMEOUT" && -f "$BASE_DIR/.env" ]]; then
   TIMEOUT="$(awk -F= '/^NOVATE_DEPLOY_TIMEOUT=/{print $2; exit}' "$BASE_DIR/.env")"
@@ -31,9 +32,36 @@ SNAPSHOT_COUNT=0
   echo "Ошибка: версия должна быть latest или YY.M.RELEASE.BUILD (например 26.8.1.001)." >&2
   exit 2
 }
+[[ -z "$RUN_MODE" || "$RUN_MODE" == "--foreground" ]] || {
+  echo "Ошибка: поддерживается только необязательный флаг --foreground." >&2
+  exit 2
+}
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Ошибка: NOVATE_DEPLOY_TIMEOUT должен быть числом секунд." >&2; exit 2; }
 [[ "$COMPOSE_UP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Ошибка: NOVATE_COMPOSE_UP_TIMEOUT должен быть числом секунд." >&2; exit 2; }
 [[ -f "$ENV_FILE" ]] || { echo "Ошибка: не найден $ENV_FILE" >&2; exit 2; }
+
+if [[ "$RUN_MODE" != "--foreground" ]]; then
+  if ! command -v systemd-run >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+    echo "systemd-run недоступен; deploy продолжится в текущем терминале." >&2
+  else
+    unit="novate-deploy-$(date -u +%Y%m%dt%H%M%S)-$$"
+    systemd-run \
+      --unit="$unit" \
+      --collect \
+      --property=Type=exec \
+      --property="WorkingDirectory=$BASE_DIR" \
+      --setenv="NOVATE_DEPLOY_TIMEOUT=$TIMEOUT" \
+      --setenv="NOVATE_COMPOSE_UP_TIMEOUT=$COMPOSE_UP_TIMEOUT" \
+      --setenv="NOVATE_VERIFY_SIGNATURES=$VERIFY_SIGNATURES" \
+      --setenv="NOVATE_COSIGN_IMAGE=$COSIGN_IMAGE" \
+      /usr/bin/bash "$BASE_DIR/deploy.sh" "$TARGET_VERSION" --foreground
+    echo "Deploy $TARGET_VERSION запущен в фоне: $unit"
+    echo "Лог:    journalctl -fu $unit"
+    echo "Статус: systemctl status $unit"
+    exit 0
+  fi
+fi
+
 mkdir -p "$STATE_DIR"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "Ошибка: другой deploy уже выполняется ($LOCK_DIR)." >&2
