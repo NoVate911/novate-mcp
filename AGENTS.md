@@ -414,6 +414,8 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   nonce, expiry/future timestamps, tampering, malformed cookie и rotation секрета.
 - `/projects/*` обслуживает dashboard только после проверки `dash_auth`; Caddy не
   должен снова публиковать `/srv/projects` напрямую.
+- Удаление проекта из панели допускается только POST-запросом той же origin,
+  только для обычной top-level директории; после удаления запускай S3 `sync` и Telegram alert.
 - Мониторинг обязан дедуплицировать Telegram alerts и уведомлять о восстановлении.
 - Каждый новый backup должен проходить безопасный restore drill во временной папке.
 - Build публикует SBOM/provenance и keyless Cosign signature; deploy проверяет

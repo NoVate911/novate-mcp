@@ -141,6 +141,17 @@ h1 a { color: inherit; text-decoration: none; }
 .card .meta { color: var(--muted); font-size: 13px; margin-top: 5px; }
 .card-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .card-actions .tag { margin-left: 0; }
+.project-delete-form { display: inline-flex; margin: 0; }
+.project-delete-button {
+  width: 36px; height: 36px; display: inline-grid; place-items: center; flex: 0 0 auto;
+  padding: 0; border: 1px solid rgba(255, 90, 110, .32); border-radius: 10px;
+  color: #ff7285; background: rgba(255, 90, 110, .08); cursor: pointer;
+  transition: color .2s ease, background .2s ease, border-color .2s ease, transform .2s ease;
+}
+.project-delete-button svg { fill: currentColor; }
+.project-delete-button:hover { color: #fff; background: #e7475e; border-color: #e7475e; transform: translateY(-1px); }
+.project-delete-button:focus-visible { outline: 2px solid #ff7285; outline-offset: 2px; }
+.project-delete-button:disabled { opacity: .55; cursor: wait; transform: none; }
 .tag {
   display: inline-block; background: var(--surface-2); border: 1px solid var(--border);
   color: var(--muted); border-radius: 9px; padding: 5px 12px; font-size: 13px;

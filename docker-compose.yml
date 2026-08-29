@@ -26,8 +26,8 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      # Панель работает с проектами в режиме только-чтение
-      - ${PROJECTS_DIR:-./projects}:/data:ro
+      # Запись нужна только для подтверждённого удаления проекта из панели
+      - ${PROJECTS_DIR:-./projects}:/data
       # Свои настройки (overrides.json) панель может писать
       - ./dashboard-data:/config
       # Архивы бэкапов: чтение + запись только для проверенных загрузок из панели

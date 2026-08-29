@@ -28,7 +28,7 @@ import {
   createHash, createPublicKey, randomBytes, verify as cryptoVerify,
 } from "node:crypto";
 import {
-  copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, statfsSync,
+  copyFileSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, statfsSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -291,6 +291,14 @@ async function exchangeCode(code: string, verifier: string): Promise<Record<stri
 }
 
 /** Пути строго внутри DATA_DIR (защита от ../). */
+function isSameOriginPost(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
+  const protocol = req.headers.get("x-forwarded-proto") || new URL(req.url).protocol.replace(":", "");
+  if (!origin || !host) return false;
+  return origin === `${protocol}://${host}`;
+}
+
 function safePath(rel: string): string | null {
   const target = resolve(DATA_DIR, rel.replace(/^\/+/, ""));
   if (target !== DATA_DIR && !target.startsWith(DATA_DIR + "/")) return null;
@@ -353,9 +361,16 @@ function walk(dir: string): { files: number; size: number; latest: number } {
 
 function indexPage(url: URL, user: string): string {
   const domain = settings.get("DOMAIN");
-  const notification = url.searchParams.get("error") === "project-archive"
-    ? toast("Не удалось начать скачивание проекта.", "error")
-    : "";
+  let notification = "";
+  if (url.searchParams.has("deleted")) {
+    notification = toast(`Проект «${url.searchParams.get("deleted") || ""}» удалён. S3-сверка запущена.`, "success");
+  } else if (url.searchParams.get("error") === "project-delete") {
+    notification = toast("Не удалось удалить проект. Проверьте, что он существует и является обычной папкой.", "error");
+  } else if (url.searchParams.get("error") === "project-origin") {
+    notification = toast("Запрос удаления отклонён проверкой источника.", "error");
+  } else if (url.searchParams.get("error") === "project-archive") {
+    notification = toast("Не удалось начать скачивание проекта.", "error");
+  }
   const cards: string[] = [];
   let totalSize = 0;
   let names: string[] = [];
@@ -376,6 +391,11 @@ function indexPage(url: URL, user: string): string {
       ? `<a class="tag" href="` + "https://" + esc(domain) + `/projects/${encodeURIComponent(name)}/" target="_blank" rel="noopener">Открыть сайт ↗</a>`
       : "";
     const download = `<a class="tag" href="/download-project/${encodeURIComponent(name)}">Скачать</a>`;
+    const remove = `<form class="project-delete-form" method="post" action="/delete-project" data-delete-project="${esc(name)}">`
+      + `<input type="hidden" name="project" value="${esc(name)}">`
+      + `<button class="project-delete-button" type="submit" title="Удалить проект" aria-label="Удалить проект ${esc(name)}">`
+      + `<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-1 11H8L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z"/></svg>`
+      + `</button></form>`;
     cards.push(
       `<div class="card rise" data-filter-item data-name="${esc(name.toLocaleLowerCase("ru"))}" `
       + `data-modified="${st.latest}" data-size="${st.size}" data-files="${st.files}" `
@@ -383,7 +403,7 @@ function indexPage(url: URL, user: string): string {
       + `<a class="main" href="/browse/${encodeURIComponent(name)}">`
       + `<div class="name">📁 ${esc(name)}</div>`
       + `<div class="meta">${humanSize(st.size)} · изменён ${fmtTime(st.latest)}</div>`
-      + `</a><div class="card-actions">${openSite}${download}</div></div>`,
+      + `</a><div class="card-actions">${openSite}${download}${remove}</div></div>`,
     );
   });
 
@@ -1105,6 +1125,36 @@ async function route(req: Request): Promise<Response> {
     let rel = "";
     try { rel = decodeURIComponent(path.slice("/browse/".length)); } catch { return redirect("/"); }
     return browsePage(rel, session.name);
+  }
+
+  if (method === "POST" && path === "/delete-project") {
+    if (!isSameOriginPost(req)) return redirect("/?error=project-origin");
+    const form = await req.formData();
+    const name = String(form.get("project") || "");
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      return redirect("/?error=project-delete");
+    }
+    const target = safePath(name);
+    if (!target || dirname(target) !== DATA_DIR) return redirect("/?error=project-delete");
+    try {
+      const info = lstatSync(target);
+      if (!info.isDirectory() || info.isSymbolicLink()) return redirect("/?error=project-delete");
+      rmSync(target, { recursive: true, force: false });
+      // Immediate reconcile removes the same project from S3; disabled S3 safely ignores it.
+      writeFileSync(`${CONFIG_DIR}/s3-action.json`, JSON.stringify({
+        action: "sync", requested_at: new Date().toISOString(), requested_by: session.uid,
+        reason: "project-delete", project: name,
+      }), "utf8");
+      tgNotify(`🗑️ <b>Проект удалён</b>
+
+<b>Проект:</b> <code>${tgEsc(name)}</code>
+<b>Пользователь:</b> ${tgEsc(session.name)}
+<i>Запущена S3-сверка.</i>`);
+      return redirect("/?deleted=" + encodeURIComponent(name));
+    } catch (err) {
+      console.error("Не удалось удалить проект:", err);
+      return redirect("/?error=project-delete");
+    }
   }
 
   if (method === "GET" && path.startsWith("/download-project/")) {

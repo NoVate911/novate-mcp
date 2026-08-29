@@ -72,3 +72,63 @@ test("valid dashboard session can read project and traversal stays blocked", asy
   });
   expect(missing.status).toBe(404);
 });
+
+
+test("unauthenticated project deletion is redirected to login", async () => {
+  const origin = `http://127.0.0.1:${port}`;
+  const response = await fetch(`${origin}/delete-project`, {
+    method: "POST", redirect: "manual",
+    headers: { Origin: origin, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ project: "site" }),
+  });
+  expect([302, 303]).toContain(response.status);
+  expect(response.headers.get("location")).toBe("/login");
+});
+
+test("authenticated user can delete one top-level project and trigger S3 sync", async () => {
+  const target = join(projects, "delete-me");
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, "file.txt"), "remove");
+  const codec = createSessionCodec(() => "s".repeat(64));
+  const cookie = codec.packSigned({ uid: "42", name: "Tester", ts: Math.floor(Date.now() / 1000) });
+  const origin = `http://127.0.0.1:${port}`;
+  const response = await fetch(`${origin}/delete-project`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      Cookie: `dash_auth=${cookie}`,
+      Origin: origin,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ project: "delete-me" }),
+  });
+  expect([302, 303]).toContain(response.status);
+  expect(response.headers.get("location")).toContain("/?deleted=delete-me");
+  expect(Bun.file(join(target, "file.txt")).size).toBe(0);
+  const action = await Bun.file(join(config, "s3-action.json")).json();
+  expect(action.action).toBe("sync");
+  expect(action.project).toBe("delete-me");
+  expect(action.requested_by).toBe("42");
+});
+
+test("project deletion rejects cross-origin and traversal requests", async () => {
+  const outside = join(root, "outside");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "keep.txt"), "keep");
+  const codec = createSessionCodec(() => "s".repeat(64));
+  const cookie = codec.packSigned({ uid: "42", name: "Tester", ts: Math.floor(Date.now() / 1000) });
+  const origin = `http://127.0.0.1:${port}`;
+  const crossOrigin = await fetch(`${origin}/delete-project`, {
+    method: "POST", redirect: "manual",
+    headers: { Cookie: `dash_auth=${cookie}`, Origin: "https://attacker.invalid", "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ project: "site" }),
+  });
+  expect(crossOrigin.headers.get("location")).toContain("error=project-origin");
+  const traversal = await fetch(`${origin}/delete-project`, {
+    method: "POST", redirect: "manual",
+    headers: { Cookie: `dash_auth=${cookie}`, Origin: origin, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ project: "../outside" }),
+  });
+  expect(traversal.headers.get("location")).toContain("error=project-delete");
+  expect(await Bun.file(join(outside, "keep.txt")).text()).toBe("keep");
+});

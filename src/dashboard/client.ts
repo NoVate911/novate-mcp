@@ -179,3 +179,16 @@ if (storageProgress) {
 if (document.querySelector(".monitor-grid")) {
   window.setTimeout(() => window.location.reload(), 30_000);
 }
+
+
+for (const form of document.querySelectorAll<HTMLFormElement>("[data-delete-project]")) {
+  form.addEventListener("submit", (event) => {
+    const name = form.dataset.deleteProject || "этот проект";
+    if (!window.confirm(`Удалить проект «${name}» без возможности отмены?`)) {
+      event.preventDefault();
+      return;
+    }
+    const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
+    if (button) button.disabled = true;
+  });
+}
