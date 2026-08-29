@@ -395,7 +395,7 @@ function indexPage(url: URL, user: string): string {
       + `<a class="main" href="/browse/${encodeURIComponent(name)}">`
       + `<div class="name">📁 ${esc(name)}</div>`
       + `<div class="meta">${humanSize(st.size)} · изменён ${fmtTime(st.latest)}</div>`
-      + `</a><div class="card-actions">${openSite}${download}<span class="tag">${humanSize(st.size)}</span></div></div>`,
+      + `</a><div class="card-actions">${openSite}${download}</div></div>`,
     );
   });
 
@@ -687,9 +687,10 @@ function backupsPage(url: URL, user: string): string {
     + `<div class="backup-actions rise"><form method="post" action="/backup-now">`
     + `<button class="btn" type="submit">Сделать бэкап сейчас</button></form>`
     + `<form method="post" action="/backup-upload" enctype="multipart/form-data" class="upload-form">`
-    + `<label class="btn gray" for="backup-upload">Загрузить бэкап</label>`
-    + `<input id="backup-upload" type="file" name="backup" accept=".tar.gz,.enc" required>`
-    + `<button class="btn" type="submit">Загрузить</button></form></div>`
+    + `<label class="btn gray upload-button" for="backup-upload">`
+    + `<span data-upload-text>Загрузить бэкап</span>`
+    + `<input id="backup-upload" type="file" name="backup" accept=".tar.gz,.tar.gz.enc,.enc" `
+    + `data-auto-submit-file required></label></form></div>`
     + `<div class="panel rise" style="margin-top:24px"><table>`
     + `<thead><tr><th>Архив</th><th>Размер</th><th>Дата</th><th></th></tr></thead>`
     + `<tbody>${rows}</tbody></table></div>`

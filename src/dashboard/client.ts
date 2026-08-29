@@ -100,3 +100,14 @@ document.querySelectorAll<HTMLElement>("[data-filter-root]").forEach((root) => {
   });
   apply();
 });
+
+
+// Единственная кнопка выбирает бэкап и сразу отправляет форму.
+document.querySelectorAll<HTMLInputElement>("[data-auto-submit-file]").forEach((input) => {
+  input.addEventListener("change", () => {
+    if (!input.files?.length || !input.form) return;
+    const text = input.closest("label")?.querySelector<HTMLElement>("[data-upload-text]");
+    if (text) text.textContent = "Загрузка…";
+    input.form.requestSubmit();
+  });
+});

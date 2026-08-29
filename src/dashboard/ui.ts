@@ -200,12 +200,12 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 }
 .note.ok { color: var(--accent); border-left-color: var(--accent); }
 .backup-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.upload-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.upload-form { display: flex; align-items: center; }
+.upload-button { position: relative; overflow: hidden; cursor: pointer; }
 .upload-form input[type=file] {
-  max-width: 260px; color: var(--muted); font-size: 13px;
-  -webkit-user-select: text; -moz-user-select: text; user-select: text;
+  position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
 }
-.upload-form input[type=file]::file-selector-button { display: none; }
 
 /* ---- тост-уведомления ---- */
 .toast-stack {
@@ -320,7 +320,7 @@ export function shell(title: string, content: string): string {
     + `<meta name="viewport" content="width=device-width, initial-scale=1">`
     + `<title>${esc(title)}</title><style>${CSS}</style></head><body>`
     + content
-    + `<script src="/static/client.js?v=5" defer></script></body></html>`;
+    + `<script src="/static/client.js?v=6" defer></script></body></html>`;
 }
 
 /** Липкая шапка с навигацией. */
