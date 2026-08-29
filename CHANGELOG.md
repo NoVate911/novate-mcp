@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- Ожидание после `docker compose up` теперь выводит причины блокировки и оставшееся время; по таймауту выполняется rollback вместо визуального «зависания».
+
 - `deploy.sh` ограничивает время Cosign/readiness/smoke-проверок, закрывает stdin Docker exec и гарантированно завершается после успешного deploy.
 
 - Исправлены rollback-теги `deploy.sh`: timestamp в имени Docker repository теперь всегда в нижнем регистре.

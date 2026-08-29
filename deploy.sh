@@ -87,27 +87,56 @@ verify_signatures() {
 }
 
 wait_until_ready() {
-  local deadline=$((SECONDS + TIMEOUT)) service cid state health all_ok
+  local deadline=$((SECONDS + TIMEOUT)) service cid state health all_ok remaining
+  local -a blockers
+  echo "Контейнеры запущены. Ожидание health/readiness (таймаут: ${TIMEOUT} сек.)..."
   while (( SECONDS < deadline )); do
     all_ok=1
+    blockers=()
     for service in "${SERVICES[@]}"; do
       cid="$(docker compose ps -q "$service" 2>/dev/null || true)"
-      if [[ -z "$cid" ]]; then all_ok=0; continue; fi
+      if [[ -z "$cid" ]]; then
+        all_ok=0
+        blockers+=("$service: контейнер не найден")
+        continue
+      fi
       state="$(docker inspect --format '{{.State.Running}}' "$cid" 2>/dev/null || true)"
       health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null || true)"
-      [[ "$state" == "true" && ( "$health" == "healthy" || "$health" == "none" ) ]] || all_ok=0
+      if [[ "$state" != "true" ]]; then
+        all_ok=0
+        blockers+=("$service: не запущен")
+      elif [[ "$health" != "healthy" && "$health" != "none" ]]; then
+        all_ok=0
+        blockers+=("$service: health=$health")
+      fi
     done
-    if (( all_ok )) && timeout 15 docker compose exec -T mcp \
-      python healthcheck.py http http://127.0.0.1:8002/health/ready 200 \
-      >/dev/null 2>&1 </dev/null; then
-      if timeout 15 docker compose exec -T mcp python -c \
+
+    if (( all_ok )); then
+      if ! timeout 15 docker compose exec -T mcp \
+        python healthcheck.py http http://127.0.0.1:8002/health/ready 200 \
+        >/dev/null 2>&1 </dev/null; then
+        all_ok=0
+        blockers+=("mcp: readiness ещё не пройден")
+      elif ! timeout 15 docker compose exec -T mcp python -c \
         'import urllib.request; response = urllib.request.urlopen("http://dashboard:8001/login", timeout=5); assert response.status == 200; response.close()' \
         >/dev/null 2>&1 </dev/null; then
-        return 0
+        all_ok=0
+        blockers+=("dashboard: smoke-test ещё не пройден")
       fi
     fi
+
+    if (( all_ok )); then
+      echo "Health/readiness проверки пройдены."
+      return 0
+    fi
+
+    remaining=$((deadline - SECONDS))
+    printf 'Ожидание, осталось до %s сек.: %s\n' "$remaining" "$(IFS='; '; echo "${blockers[*]}")"
     sleep 5
   done
+
+  echo "Таймаут readiness после ${TIMEOUT} сек. Текущее состояние:" >&2
+  docker compose ps >&2 || true
   return 1
 }
 
@@ -121,6 +150,14 @@ rollback() {
     echo "Rollback образов невозможен: до deploy не было запущенных контейнеров." >&2
   fi
 }
+
+on_interrupt() {
+  trap - INT TERM
+  echo "Deploy прерван. Выполняется rollback..." >&2
+  rollback
+  exit 130
+}
+trap on_interrupt INT TERM
 
 cp -p "$ENV_FILE" "$ENV_BACKUP"
 snapshot_images
