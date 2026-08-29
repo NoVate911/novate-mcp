@@ -359,7 +359,7 @@ docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
 | Ключ | Назначение | Смена из панели |
 |---|---|---|
 | `MCP_TOKEN` | Bearer-токен для MCP-клиента | ✅ генерация и копирование; MCP-процесс применяет автоматически |
-| `SESSION_SECRET` | Секрет подписи сессий панели (HMAC) | ✅ генерация и копирование; сразу завершает текущие сессии |
+| `SESSION_SECRET` | Секрет шифрования сессий панели (AES-256-GCM) | ✅ генерация и копирование; сразу завершает текущие сессии |
 | `TG_CLIENT_ID` | Client ID OIDC-приложения Telegram | ✅ сразу |
 | `TG_CLIENT_SECRET` | Client Secret OIDC-приложения | ✅ ручная замена (значение выдаёт Telegram) |
 | `ALLOWED_TG_USERS` | Telegram ID с доступом в панель, через запятую | ✅ поле с текущим списком: добавление, изменение и удаление |
@@ -395,9 +395,9 @@ docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
 - Доступ к панели — только у Telegram ID из `ALLOWED_TG_USERS`; список
   проверяется при каждом запросе, поэтому убранный из списка пользователь
   теряет доступ мгновенно.
-- Сессия панели — HMAC-подписанная cookie (ключ `SESSION_SECRET`),
+- Сессия панели — аутентифицированная AES-256-GCM cookie (ключ выводится из `SESSION_SECRET` через scrypt),
   HttpOnly + Secure + SameSite=Lax, живёт 7 дней.
-- Ключ подписи выводится из `SESSION_SECRET` через memory-hard scrypt; HMAC-SHA-256 подписи сравниваются через timingSafeEqual без утечки длины.
+- Ключ cookie выводится из `SESSION_SECRET` через memory-hard scrypt; целостность и конфиденциальность обеспечивает AES-256-GCM authentication tag.
 - Все файловые операции ограничены папкой проектов — защита от `../` в коде
   + Docker-монтирование только этой папки.
 - `run_command` выполняется **внутри контейнера**, а не на хосте.

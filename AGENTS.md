@@ -239,7 +239,7 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   на `digest("base64url")` / `toString("base64url")` рантайма.
 - JWKS кэшируются в памяти на 1 час; если kid из JWT не найден и ключ
   в наборе один — берётся он.
-- Сессия — HMAC-подписанная cookie (SESSION_SECRET): uid + name + ts.
+- Сессия — аутентифицированная AES-256-GCM cookie (ключ из SESSION_SECRET через scrypt): uid + name + ts.
   Allowlist ALLOWED_TG_USERS проверяется на КАЖДЫЙ запрос.
 
 ## Security considerations
@@ -251,9 +251,9 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   в подписанной cookie (10 минут), подпись id_token проверяется по JWKS
   Telegram, проверяются iss/aud/exp. Доступ — только у ID из
   ALLOWED_TG_USERS; allowlist проверяется на КАЖДЫЙ запрос.
-- Сессионная cookie — HMAC-подписанная (ключ SESSION_SECRET),
+- Сессионная cookie — зашифрованная и аутентифицированная AES-256-GCM (ключ из SESSION_SECRET через scrypt),
   HttpOnly + Secure + SameSite=Lax, TTL 7 дней; подписи сравниваются через
-  scrypt-derived HMAC-SHA-256 key + timingSafeEqual по 32-байтовым подписям (не сравнивай секреты напрямую — утекает длина).
+  scrypt-derived AES-256-GCM key; целостность проверяет GCM authentication tag (не заменяй это прямым сравнением или быстрым password hash).
 - Бэкапы содержат overrides.json — там могут лежать переопределённые
   секреты. Чат TG_CHAT_ID и папка backups/ = хранилища секретов.
 - Контейнеры работают не от root (uid 1000). Панель монтирует проекты

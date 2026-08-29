@@ -23,8 +23,8 @@
  */
 
 import {
-  createHash, createHmac, createPublicKey, randomBytes, scryptSync,
-  timingSafeEqual, verify as cryptoVerify,
+  createCipheriv, createDecipheriv, createHash, createPublicKey, randomBytes,
+  scryptSync, verify as cryptoVerify,
 } from "node:crypto";
 import {
   copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, statfsSync,
@@ -98,20 +98,20 @@ const EDITABLE: EditableSetting[] = [
 
 // ---------- безопасность ----------
 
-const SESSION_KDF_SALT = "novate-mcp/session-signing-key/v1";
+const SESSION_KDF_CONTEXT = "novate-mcp/session-signing-key/v1";
 let cachedSessionSecret = "";
 let cachedSessionKey: Buffer | null = null;
 
 /**
  * SESSION_SECRET может быть введён вручную, поэтому перед использованием в
- * HMAC получаем отдельный 256-битный ключ через memory-hard scrypt. Кэш
+ * cookie получаем отдельный 256-битный ключ через memory-hard scrypt. Кэш
  * сбрасывается автоматически после смены секрета в панели.
  */
-function sessionSigningKey(): Buffer {
+function sessionCookieKey(): Buffer {
   const sessionSecret = settings.get("SESSION_SECRET");
   if (!cachedSessionKey || sessionSecret !== cachedSessionSecret) {
     cachedSessionSecret = sessionSecret;
-    cachedSessionKey = scryptSync(sessionSecret, SESSION_KDF_SALT, 32, {
+    cachedSessionKey = scryptSync(sessionSecret, SESSION_KDF_CONTEXT, 32, {
       N: 1 << 15,
       r: 8,
       p: 1,
@@ -121,37 +121,37 @@ function sessionSigningKey(): Buffer {
   return cachedSessionKey;
 }
 
-function sessionSignature(data: string): string {
-  return createHmac("sha256", sessionSigningKey()).update(data).digest("hex");
-}
-
-/** Constant-time сравнение двух HMAC-SHA-256 подписей фиксированной длины. */
-function eqSignature(a: string, b: string): boolean {
-  const left = Buffer.from(a, "hex");
-  const right = Buffer.from(b, "hex");
-  return left.length === 32 && right.length === 32 && timingSafeEqual(left, right);
-}
-
 function b64url(buf: Buffer): string {
   // base64url собираем вручную из base64 — не зависим от поддержки кодировки в рантайме
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** Подписанное HMAC значение cookie: base64url(payload).hex-подпись. */
+/**
+ * Аутентифицированная cookie: nonce.ciphertext.authTag. AES-256-GCM одновременно
+ * защищает содержимое и проверяет целостность без отдельного password/HMAC hash.
+ */
 function packSigned(payload: Record<string, unknown>): string {
-  const p = b64url(Buffer.from(JSON.stringify(payload), "utf8"));
-  return `${p}.${sessionSignature(p)}`;
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", sessionCookieKey(), nonce);
+  const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${b64url(nonce)}.${b64url(ciphertext)}.${b64url(authTag)}`;
 }
 
-/** Проверка подписи и срока жизни подписанного значения cookie. */
+/** Расшифровка, проверка GCM authentication tag и срока жизни cookie. */
 function unpackSigned(cookie: string, ttl: number): Record<string, unknown> | null {
-  const dot = cookie.lastIndexOf(".");
-  if (dot < 0) return null;
-  const p = cookie.slice(0, dot);
-  const sig = cookie.slice(dot + 1);
-  if (!p || !sig || !eqSignature(sig, sessionSignature(p))) return null;
+  const parts = cookie.split(".");
+  if (parts.length !== 3 || parts.some((part) => !part)) return null;
   try {
-    const data = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as Record<string, unknown>;
+    const nonce = Buffer.from(parts[0]!, "base64url");
+    const ciphertext = Buffer.from(parts[1]!, "base64url");
+    const authTag = Buffer.from(parts[2]!, "base64url");
+    if (nonce.length !== 12 || authTag.length !== 16 || ciphertext.length === 0) return null;
+    const decipher = createDecipheriv("aes-256-gcm", sessionCookieKey(), nonce);
+    decipher.setAuthTag(authTag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    const data = JSON.parse(plaintext.toString("utf8")) as Record<string, unknown>;
     if (typeof data.ts !== "number") return null;
     const age = Math.floor(Date.now() / 1000) - data.ts;
     if (age < 0 || age > ttl) return null;
