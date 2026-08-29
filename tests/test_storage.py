@@ -167,7 +167,20 @@ class StorageTests(unittest.TestCase):
         self.fake.objects["projects/shared.txt"] = b"remote"
         (self.root / "local").mkdir(); (self.root / "local/file.txt").write_text("local")
         (self.root / "shared.txt").write_text("keep-local")
-        result = s3(self.root, self.fake).startup_merge()
+        storage = s3(self.root, self.fake)
+        progress_events = []
+        original_write_status = storage._write_status
+
+        def capture_status(**updates):
+            startup = updates.get("startup") or {}
+            if startup.get("state") == "running":
+                progress_events.append((startup.get("phase"), startup.get("current"), startup.get("total")))
+            return original_write_status(**updates)
+
+        storage._write_status = capture_status
+        result = storage.startup_merge()
+        self.assertTrue(any(phase == "merge" for phase, _, _ in progress_events))
+        self.assertTrue(any(phase == "reconcile" for phase, _, _ in progress_events))
         self.assertEqual((self.root / "cloud/index.html").read_bytes(), b"cloud")
         self.assertEqual((self.root / "shared.txt").read_text(), "keep-local")
         self.assertEqual(self.fake.objects["projects/shared.txt"], b"keep-local")

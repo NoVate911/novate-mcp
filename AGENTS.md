@@ -406,6 +406,8 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   автоматический pre-restore snapshot.
 - `deploy.sh` обязан сохранять старые image IDs локальными тегами, ждать health и
   readiness, выполнять smoke-test и автоматически откатывать `.env` и образы.
+- Во время S3 startup deploy должен сбрасывать stall deadline только при изменении
+  `state/phase/current/total`; неизвестное общее число файлов не является ошибкой.
 - Caddy должен отдавать глобальный `X-Robots-Tag` и закрытый `robots.txt`; не
   описывай это как полноценную приватность без auth/VPN/allowlist.
 - E2E-тесты session cookie обязаны проверять AES-256-GCM round trip, уникальный

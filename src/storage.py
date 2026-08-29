@@ -664,11 +664,16 @@ class S3Storage(S3StorageCore):
             raise StorageError("неизвестная операция в S3 outbox")
 
     def flush_outbox(self, *, force: bool = False, only_ids: set[str] | None = None,
-                     raise_errors: bool = False) -> int:
+                     raise_errors: bool = False, progress=None) -> int:
         completed = 0
         first_error: StorageError | None = None
         with self._lock:
-            for entry in list(self._state["outbox"]):
+            entries = list(self._state["outbox"])
+            progress_total = max(len(entries), 1)
+            if progress is not None:
+                progress("outbox", 0, progress_total)
+            progress_current = 0
+            for entry in entries:
                 if only_ids is not None and entry.get("id") not in only_ids:
                     continue
                 if not force and float(entry.get("next_retry", 0)) > time.time():
@@ -687,6 +692,9 @@ class S3Storage(S3StorageCore):
                             30 * (2 ** min(current["attempts"] - 1, 7)), 3600
                         )
                     first_error = first_error or exc
+                progress_current += 1
+                if progress is not None:
+                    progress("outbox", progress_current, progress_total)
             self._save_state()
             if first_error is None:
                 self._write_status(connection="ok", last_success=self._now(), last_error="")
@@ -711,8 +719,8 @@ class S3Storage(S3StorageCore):
             self._write_status(connection="ok", last_success=self._now(), last_error="")
         return SyncResult(downloaded=downloaded)
 
-    def reconcile_now(self) -> SyncResult:
-        """Сверяет локальный manifest и реальные S3 keys; локальная версия приоритетна."""
+    def reconcile_now(self, progress=None) -> SyncResult:
+        """Сверяет local manifest и S3, сообщая прогресс для startup/deploy."""
         with self._lock:
             local = self.snapshot()
             manifest = self._state["manifest"]
@@ -721,16 +729,29 @@ class S3Storage(S3StorageCore):
                 if (rel := self.rel_from_key(str(obj.get("Key", ""))))
                 and not self.is_excluded(rel)
             }
+            progress_total = max(len(local) + len(manifest) + len(remote), 1)
+            progress_current = 0
+
+            def advance() -> None:
+                nonlocal progress_current
+                progress_current += 1
+                if progress is not None:
+                    progress("reconcile", progress_current, progress_total)
+
+            if progress is not None:
+                progress("reconcile", 0, progress_total)
             queued_put = queued_delete = downloaded = 0
             for rel, state in local.items():
                 saved = manifest.get(rel, {})
                 if (saved.get("size"), saved.get("mtime_ns")) != state or rel not in remote:
                     self._queue("put", rel, persist=False)
                     queued_put += 1
+                advance()
             for rel in list(manifest):
                 if rel not in local:
                     self._queue("delete", rel, persist=False)
                     queued_delete += 1
+                advance()
             # Новый объект, добавленный непосредственно в bucket, безопасно
             # восстанавливается только если локального пути и manifest ещё нет.
             for rel in remote:
@@ -738,10 +759,11 @@ class S3Storage(S3StorageCore):
                     if super().fetch_if_missing(rel):
                         self._manifest_set(rel)
                         downloaded += 1
+                advance()
             # Журнал целиком фиксируется до первой сетевой операции.
             self._save_state()
             self._write_status()
-            self.flush_outbox(force=True, raise_errors=True)
+            self.flush_outbox(force=True, raise_errors=True, progress=progress)
             self._save_state()
             now = self._now()
             self._write_status(
@@ -777,14 +799,14 @@ class S3Storage(S3StorageCore):
         try:
             # Сначала применяем журнал прошлого запуска, чтобы ожидающий DELETE
             # не был восстановлен обратно из ещё не очищенного S3.
-            self.flush_outbox(force=True, raise_errors=True)
+            self.flush_outbox(force=True, raise_errors=True, progress=report)
             result = super().startup_merge(progress=report)
             self._write_status(connection="initializing", startup={
                 "state": "running", "phase": "reconcile",
                 "current": progress_state["total"], "total": progress_state["total"],
                 "started_at": started,
             })
-            reconciled = self.reconcile_now()
+            reconciled = self.reconcile_now(progress=report)
             combined = SyncResult(
                 uploaded=result.uploaded + reconciled.uploaded,
                 deleted=reconciled.deleted,
@@ -792,21 +814,25 @@ class S3Storage(S3StorageCore):
                 conflicts=result.conflicts,
             )
             finished = self._now()
-            self._write_status(connection="ok", last_success=finished, last_error="", startup={
-                "state": "complete", "phase": "complete",
-                "current": progress_state["total"], "total": progress_state["total"],
-                "started_at": started, "finished_at": finished,
-                "result": {"uploaded": combined.uploaded, "deleted": combined.deleted,
-                           "downloaded": combined.downloaded, "conflicts": combined.conflicts},
-            })
+            # Финальный startup status сериализуется тем же lock, что и записи
+            # инструментов: параллельный put_file не сможет вернуть state=running.
+            with self._lock:
+                self._write_status(connection="ok", last_success=finished, last_error="", startup={
+                    "state": "complete", "phase": "complete",
+                    "current": progress_state["total"], "total": progress_state["total"],
+                    "started_at": started, "finished_at": finished,
+                    "result": {"uploaded": combined.uploaded, "deleted": combined.deleted,
+                               "downloaded": combined.downloaded, "conflicts": combined.conflicts},
+                })
             return combined
         except Exception as exc:
             safe = str(exc) if isinstance(exc, StorageError) else type(exc).__name__
-            self._write_status(connection="error", last_error=safe, startup={
-                "state": "error", "phase": "error",
-                "current": progress_state["current"], "total": progress_state["total"],
-                "started_at": started, "finished_at": self._now(), "error": safe,
-            })
+            with self._lock:
+                self._write_status(connection="error", last_error=safe, startup={
+                    "state": "error", "phase": "error",
+                    "current": progress_state["current"], "total": progress_state["total"],
+                    "started_at": started, "finished_at": self._now(), "error": safe,
+                })
             raise
 
 

@@ -11,6 +11,11 @@ if [[ -z "$TIMEOUT" && -f "$BASE_DIR/.env" ]]; then
 fi
 TIMEOUT="${TIMEOUT:-600}"
 COMPOSE_UP_TIMEOUT="${NOVATE_COMPOSE_UP_TIMEOUT:-180}"
+S3_STALL_TIMEOUT="${NOVATE_S3_STALL_TIMEOUT:-}"
+if [[ -z "$S3_STALL_TIMEOUT" && -f "$BASE_DIR/.env" ]]; then
+  S3_STALL_TIMEOUT="$(awk -F= '/^NOVATE_S3_STALL_TIMEOUT=/{print $2; exit}' "$BASE_DIR/.env")"
+fi
+S3_STALL_TIMEOUT="${S3_STALL_TIMEOUT:-600}"
 export COMPOSE_ANSI=never
 export COMPOSE_PROGRESS=plain
 LOCK_DIR="$BASE_DIR/.deploy.lock"
@@ -38,6 +43,7 @@ SNAPSHOT_COUNT=0
 }
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Ошибка: NOVATE_DEPLOY_TIMEOUT должен быть числом секунд." >&2; exit 2; }
 [[ "$COMPOSE_UP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Ошибка: NOVATE_COMPOSE_UP_TIMEOUT должен быть числом секунд." >&2; exit 2; }
+[[ "$S3_STALL_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo "Ошибка: NOVATE_S3_STALL_TIMEOUT должен быть числом секунд." >&2; exit 2; }
 [[ -f "$ENV_FILE" ]] || { echo "Ошибка: не найден $ENV_FILE" >&2; exit 2; }
 
 if [[ "$RUN_MODE" != "--foreground" ]]; then
@@ -52,6 +58,7 @@ if [[ "$RUN_MODE" != "--foreground" ]]; then
       --property="WorkingDirectory=$BASE_DIR" \
       --setenv="NOVATE_DEPLOY_TIMEOUT=$TIMEOUT" \
       --setenv="NOVATE_COMPOSE_UP_TIMEOUT=$COMPOSE_UP_TIMEOUT" \
+      --setenv="NOVATE_S3_STALL_TIMEOUT=$S3_STALL_TIMEOUT" \
       --setenv="NOVATE_VERIFY_SIGNATURES=$VERIFY_SIGNATURES" \
       --setenv="NOVATE_COSIGN_IMAGE=$COSIGN_IMAGE" \
       /usr/bin/bash "$BASE_DIR/deploy.sh" "$TARGET_VERSION" --foreground
@@ -118,11 +125,23 @@ verify_signatures() {
   done
 }
 
+read_s3_progress() {
+  timeout 5 docker compose exec -T mcp python -c '
+import json
+from pathlib import Path
+status = json.loads(Path("/storage-state/status.json").read_text(encoding="utf-8"))
+startup = status.get("startup") or {}
+print(startup.get("state", ""), startup.get("phase", ""), int(startup.get("current", 0) or 0), int(startup.get("total", 0) or 0), sep="\t")
+' </dev/null 2>/dev/null
+}
+
 wait_until_ready() {
   local deadline=$((SECONDS + TIMEOUT)) service cid state health all_ok remaining
+  local s3_info s3_state s3_phase s3_current s3_total fingerprint
+  local last_fingerprint="" last_progress_at=$SECONDS idle=0
   local -a blockers
-  echo "Контейнеры запущены. Ожидание health/readiness (таймаут: ${TIMEOUT} сек.)..."
-  while (( SECONDS < deadline )); do
+  echo "Контейнеры запущены. Базовый readiness timeout: ${TIMEOUT} сек.; S3 stall timeout: ${S3_STALL_TIMEOUT} сек."
+  while :; do
     all_ok=1
     blockers=()
     for service in "${SERVICES[@]}"; do
@@ -142,6 +161,30 @@ wait_until_ready() {
         blockers+=("$service: health=$health")
       fi
     done
+
+    s3_info="$(read_s3_progress || true)"
+    if [[ -n "$s3_info" ]]; then
+      IFS=$'\t' read -r s3_state s3_phase s3_current s3_total <<< "$s3_info"
+      fingerprint="$s3_state|$s3_phase|$s3_current|$s3_total"
+      if [[ "$s3_state" == "error" ]]; then
+        echo "S3 startup reconciliation завершилась ошибкой." >&2
+        return 1
+      elif [[ "$s3_state" == "running" ]]; then
+        if [[ "$fingerprint" != "$last_fingerprint" ]]; then
+          last_fingerprint="$fingerprint"
+          last_progress_at=$SECONDS
+          deadline=$((SECONDS + S3_STALL_TIMEOUT))
+          echo "S3 progress: phase=$s3_phase, ${s3_current}/${s3_total}; stall timeout сброшен."
+        fi
+        idle=$((SECONDS - last_progress_at))
+        all_ok=0
+        blockers+=("S3: $s3_phase ${s3_current}/${s3_total}, без прогресса ${idle}/${S3_STALL_TIMEOUT} сек.")
+      elif [[ "$s3_state" == "complete" && "$fingerprint" != "$last_fingerprint" ]]; then
+        last_fingerprint="$fingerprint"
+        deadline=$((SECONDS + TIMEOUT))
+        echo "S3 startup reconciliation завершена; проверяется общая readiness."
+      fi
+    fi
 
     if (( all_ok )); then
       if ! timeout 15 docker compose exec -T mcp \
@@ -163,13 +206,18 @@ wait_until_ready() {
     fi
 
     remaining=$((deadline - SECONDS))
-    printf 'Ожидание, осталось до %s сек.: %s\n' "$remaining" "$(IFS='; '; echo "${blockers[*]}")"
+    if (( remaining <= 0 )); then
+      if [[ "${s3_state:-}" == "running" ]]; then
+        echo "S3 не показывала прогресс ${S3_STALL_TIMEOUT} сек.; deploy считается зависшим." >&2
+      else
+        echo "Readiness не достигнута за ${TIMEOUT} сек." >&2
+      fi
+      docker compose ps >&2 || true
+      return 1
+    fi
+    printf 'Ожидание, до rollback не более %s сек.: %s\n' "$remaining" "$(IFS='; '; echo "${blockers[*]}")"
     sleep 5
   done
-
-  echo "Таймаут readiness после ${TIMEOUT} сек. Текущее состояние:" >&2
-  docker compose ps >&2 || true
-  return 1
 }
 
 rollback() {
