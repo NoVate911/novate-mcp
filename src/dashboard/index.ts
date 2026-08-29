@@ -803,10 +803,10 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     ["S3_SECRET_KEY", process.env.S3_SECRET_KEY ? "Настроен" : "Не задан"],
     ["S3_EXCLUDE", process.env.S3_EXCLUDE || "Только встроенные исключения"],
   ];
-  rows.storage.push(...s3Info.map(([key, value]) =>
+  const s3ConfigRows = s3Info.map(([key, value]) =>
     `<tr><td style="width:210px"><div class="setting-name"><b>${esc(key)}</b>`
     + `<span class="badge env">.env</span></div></td><td>${esc(value)}</td></tr>`,
-  ));
+  ).join("");
 
   let s3Status: Record<string, unknown> = {};
   try {
@@ -819,28 +819,40 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   const connection = !s3Enabled ? "Отключено"
     : s3Status.connection === "ok" ? "Подключено"
     : s3Status.connection === "error" ? "Ошибка" : "Запускается";
+  const statusTime = (value: unknown): string => {
+    if (typeof value !== "string" || !value) return "—";
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? fmtTime(parsed) : value;
+  };
   const runtimeInfo: Array<[string, string]> = [
-    ["Состояние", connection],
     ["Операций в очереди", String(s3Status.pending ?? 0)],
-    ["Статус обновлён", String(s3Status.updated_at || "—")],
-    ["Последняя успешная операция", String(s3Status.last_success || "—")],
-    ["Последняя полная сверка", String(s3Status.last_reconcile || "—")],
+    ["Статус обновлён", statusTime(s3Status.updated_at)],
+    ["Последняя успешная операция", statusTime(s3Status.last_success)],
+    ["Последняя полная сверка", statusTime(s3Status.last_reconcile)],
     ["Последний результат", `PUT: ${statusResult.uploaded ?? 0}, DELETE: ${statusResult.deleted ?? 0}, `
       + `скачано: ${statusResult.downloaded ?? 0}`],
     ["Последняя ошибка", String(s3Status.last_error || "—")],
   ];
-  rows.storage.push(...runtimeInfo.map(([key, value]) =>
-    `<tr><td style="width:210px"><div class="setting-name"><b>${esc(key)}</b>`
-    + `<span class="badge panel">runtime</span></div></td><td>${esc(value)}</td></tr>`,
-  ));
+  const connectionClass = connection === "Подключено" ? "ok"
+    : connection === "Ошибка" ? "error" : connection === "Отключено" ? "off" : "wait";
+  const s3RuntimeRows = `<tr><td style="width:210px"><div class="setting-name"><b>Состояние</b>`
+    + `<span class="badge panel">runtime</span></div></td>`
+    + `<td><span class="storage-state ${connectionClass}"><i></i>${esc(connection)}</span></td></tr>`
+    + runtimeInfo.map(([key, value]) =>
+      `<tr><td style="width:210px"><div class="setting-name"><b>${esc(key)}</b>`
+      + `<span class="badge panel">runtime</span></div></td><td>${esc(value)}</td></tr>`,
+    ).join("");
 
   const noteBlock =
-    `<div class="note rise"><b>Управление настройками</b><br>`
-    + `Изменения сохраняются как переопределения и применяются автоматически.<br>`
-    + `Обычные значения можно редактировать полностью, а локальные секреты — безопасно создавать заново.<br>`
-    + `Секреты Telegram заменяются вручную, поскольку их выдаёт @BotFather. `
-    + `S3-параметры требуют проверки при старте MCP и изменяются только через .env. `
-    + `Кнопка «По умолчанию» возвращает значение из .env.</div>`;
+    `<section class="settings-guide rise">`
+    + `<div class="settings-guide-icon" aria-hidden="true">⚙</div>`
+    + `<div class="settings-guide-copy"><span class="settings-guide-kicker">Центр управления</span>`
+    + `<h1>Настройте сервисы под свою работу</h1>`
+    + `<p>Параметры разделены по назначению. Изменяемые значения сохраняются в панели, `
+    + `а системные параметры с бейджем <b>.env</b> управляются только через файл окружения.</p>`
+    + `<div class="settings-guide-points"><span>Изменения применяются автоматически</span>`
+    + `<span>Секреты не отображаются открыто</span>`
+    + `<span>«По умолчанию» возвращает значение из .env</span></div></div></section>`;
 
   const requestedTab = url.searchParams.get("tab") as SettingSection | null;
   const activeTab = SETTING_SECTIONS.some((section) => section.id === requestedTab)
@@ -852,18 +864,42 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
       + `aria-controls="settings-${section.id}" aria-selected="${section.id === activeTab}">`
       + `${esc(section.label)}</button>`,
     ).join("") + `</div>`;
+  const storageContent =
+    `<div class="settings-group"><div class="settings-group-head"><div>`
+    + `<span class="settings-group-kicker">Конфигурация</span><h3>Параметры подключения</h3>`
+    + `<p>Значения только для чтения. Изменяются в .env и применяются после пересоздания контейнеров.</p>`
+    + `</div></div><div class="panel"><table><tbody>${s3ConfigRows}</tbody></table></div></div>`
+    + `<div class="settings-group"><div class="settings-group-head"><div>`
+    + `<span class="settings-group-kicker">Мониторинг</span><h3>Состояние и синхронизация</h3>`
+    + `<p>Текущий статус MCP, постоянной очереди и последней сверки рабочей копии с S3.</p>`
+    + `</div></div><div class="panel"><table><tbody>${s3RuntimeRows}</tbody></table></div></div>`
+    + `<div class="settings-group"><div class="settings-group-head"><div>`
+    + `<span class="settings-group-kicker">Ручное управление</span><h3>Операции с хранилищем</h3>`
+    + `<p>Каждое действие выполняет отдельную задачу и не меняет параметры подключения.</p>`
+    + `</div></div>`
+    + (s3Enabled
+      ? `<div class="s3-actions-grid">`
+        + `<article class="s3-action-card"><div class="s3-action-icon">◉</div><h4>Проверка подключения</h4>`
+        + `<p>Проверит endpoint, ключи, bucket и права на чтение, запись и удаление.</p>`
+        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="check">Проверить подключение</button></form></article>`
+        + `<article class="s3-action-card featured"><div class="s3-action-icon">↻</div><h4>Полная синхронизация</h4>`
+        + `<p>Обработает очередь и сразу сверит локальную рабочую копию с объектами S3.</p>`
+        + `<form method="post" action="/s3-action"><button class="btn" name="action" value="sync">Синхронизировать сейчас</button></form></article>`
+        + `<article class="s3-action-card"><div class="s3-action-icon">↓</div><h4>Восстановление файлов</h4>`
+        + `<p>Скачает только отсутствующие локально файлы, не перезаписывая существующие.</p>`
+        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="recover">Восстановить отсутствующие</button></form></article>`
+        + `</div>`
+      : `<div class="s3-disabled"><b>S3-хранилище отключено</b>`
+        + `<p>Установите S3_ENABLED=true и заполните обязательные параметры в .env, чтобы открыть ручные операции.</p></div>`)
+    + `</div>`;
   const panels = SETTING_SECTIONS.map((section) =>
     `<section class="settings-panel" id="settings-${section.id}" role="tabpanel" `
     + `data-settings-panel="${section.id}"${section.id === activeTab ? "" : " hidden"}>`
     + `<div class="settings-section-head"><h2>${esc(section.label)}</h2>`
     + `<p>${esc(section.description)}</p></div>`
-    + `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>`
-    + (section.id === "storage" && s3Enabled
-      ? `<div class="actions" style="margin-top:16px">`
-        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="check">Проверить подключение</button></form>`
-        + `<form method="post" action="/s3-action"><button class="btn" name="action" value="sync">Синхронизировать сейчас</button></form>`
-        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="recover">Восстановить отсутствующие</button></form>`
-        + `</div>` : "") + `</section>`,
+    + (section.id === "storage" ? storageContent
+      : `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>`)
+    + `</section>`,
   ).join("");
 
   return shell("NoVate MCP — настройки",
