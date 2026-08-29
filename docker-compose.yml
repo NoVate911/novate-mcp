@@ -1,9 +1,9 @@
 # Код НЕ собирается на сервере — используются готовые образы из GHCR,
 # которые собирает GitHub Actions. Обновление: docker compose pull && docker compose up -d
-# Один GHCR-пакет (novate-mcp), три тега: mcp-latest, dashboard-latest, backup-latest.
+# Один GHCR-пакет (novate-mcp), теги latest и версионные теги вида mcp-26.8.1.001.
 services:
   mcp:
-    image: ghcr.io/novate911/novate-mcp:mcp-latest
+    image: ghcr.io/novate911/novate-mcp:mcp-${NOVATE_VERSION:-latest}
     container_name: fastmcp-server
     restart: unless-stopped
     env_file: .env
@@ -21,7 +21,7 @@ services:
       - web
 
   dashboard:
-    image: ghcr.io/novate911/novate-mcp:dashboard-latest
+    image: ghcr.io/novate911/novate-mcp:dashboard-${NOVATE_VERSION:-latest}
     container_name: mcp-dashboard
     restart: unless-stopped
     env_file: .env
@@ -40,7 +40,7 @@ services:
       - web
 
   backup:
-    image: ghcr.io/novate911/novate-mcp:backup-latest
+    image: ghcr.io/novate911/novate-mcp:backup-${NOVATE_VERSION:-latest}
     container_name: novate-backup
     restart: unless-stopped
     env_file: .env
@@ -73,9 +73,16 @@ services:
       - ${PROJECTS_DIR:-./projects}:/srv/projects:ro
     networks:
       - web
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
-      - mcp
-      - dashboard
+      mcp:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
 
 volumes:
   storage_state:

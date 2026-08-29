@@ -377,3 +377,26 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   обычно это https://s3.regru.cloud, но не хардкодь его в runtime.
 - GHCR-теги сервисов: `mcp-latest` / `dashboard-latest` / `backup-latest` —
   не перепутай в docker-compose.yml.
+
+
+## Release, CI and health rules
+
+- Формат релиза строго `YY.M.RELEASE.BUILD`: год, месяц, серия релиза и
+  трёхзначная сборка. Пример: `26.8.1.001`. После `999` увеличивай RELEASE и
+  начинай BUILD с `001`.
+- Push тега релиза публикует `mcp-<version>`, `dashboard-<version>` и
+  `backup-<version>`. Push в main публикует только соответствующие `*-latest`.
+- `NOVATE_VERSION` в `.env` выбирает единый суффикс всех трёх образов; по
+  умолчанию `latest`. Не смешивай версии сервисов без отдельного обоснования.
+- Перед PR обязательны Python tests, `py_compile`, `bash -n`, YAML/Compose,
+  `bun run typecheck` и `bun run build` из `src/dashboard`.
+- Security workflow использует Gitleaks и Trivy; не ослабляй HIGH/CRITICAL
+  enforcement без документированного исключения.
+- MCP и dashboard healthchecks проверяют локальные порты. Backup healthcheck
+  читает `/backups/.backup-heartbeat.json`; heartbeat обновляется каждый цикл.
+- Просроченным считается бэкап старше `BACKUP_STALE_AFTER_HOURS`, а если
+  переменная пуста — старше max(2 интервала, интервал + 1 час). Telegram-alert
+  отправляется один раз до следующей успешной копии.
+- E2E-тесты бэкапа обязаны проверять обычный и AES-256 round trip, включая
+  автоматический pre-restore snapshot.
+- Все пользовательские изменения фиксируй в секции Unreleased CHANGELOG.md.

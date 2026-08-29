@@ -1,0 +1,12 @@
+{
+  "name": "novate-mcp-dashboard",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf /tmp/novate-dashboard-check && bun build ./index.ts --outdir /tmp/novate-dashboard-check --target bun && bun build ./client.ts --outdir /tmp/novate-dashboard-check/public --target browser --minify"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.9.0"
+  }
+}

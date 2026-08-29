@@ -13,11 +13,14 @@ RUN useradd --create-home appuser \
     && mkdir -p /data /config /storage-state \
     && chown -R appuser:appuser /data /config /storage-state
 
-COPY src/server.py src/settings.py src/storage.py ./
+COPY src/server.py src/settings.py src/storage.py src/healthcheck.py ./
 
 USER appuser
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["python", "healthcheck.py", "tcp", "127.0.0.1", "8000"]
 
 CMD ["python", "server.py"]
 
@@ -43,6 +46,9 @@ USER bun
 
 EXPOSE 8001
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:8001/login');if(!r.ok)process.exit(1)"]
+
 CMD ["bun", "index.ts"]
 
 
@@ -56,8 +62,11 @@ RUN useradd --create-home appuser \
     && mkdir -p /data /config /backups \
     && chown -R appuser:appuser /data /config /backups
 
-COPY src/backup.py src/settings.py ./
+COPY src/backup.py src/settings.py src/healthcheck.py ./
 
 USER appuser
+
+HEALTHCHECK --interval=60s --timeout=5s --start-period=90s --retries=3 \
+  CMD ["python", "healthcheck.py", "backup", "/backups/.backup-heartbeat.json", "180"]
 
 CMD ["python", "backup.py"]

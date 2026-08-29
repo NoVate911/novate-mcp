@@ -1,8 +1,12 @@
-name: Build and push Docker images
+name: Test, build and publish
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
+    tags:
+      - "[0-9][0-9].[0-9]*.[0-9]*.[0-9][0-9][0-9]"
   workflow_dispatch:
 
 permissions:
@@ -10,48 +14,111 @@ permissions:
   packages: write
 
 jobs:
-  test:
+  validate-version:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Python 3.12
-        uses: actions/setup-python@v5
+      - name: Validate release tag
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]{2}\.[0-9]{1,2}\.[0-9]+\.[0-9]{3}$ ]]; then
+            echo "Expected YY.M.RELEASE.BUILD, for example 26.8.1.001"
+            exit 1
+          fi
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install test dependencies
-        run: pip install fastmcp
-      - name: Python tests
-        run: PYTHONPATH=src python -m unittest discover -s tests -v
+        run: pip install fastmcp boto3 pyyaml
       - name: Static checks
         run: |
-          python -m py_compile src/server.py src/settings.py src/storage.py src/backup.py
           bash -n install.sh
+          python -m py_compile src/server.py src/settings.py src/storage.py src/backup.py src/healthcheck.py
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in [Path('docker-compose.yml'), *Path('.github').rglob('*.yml')]:
+              yaml.safe_load(path.read_text(encoding='utf-8'))
+              print('YAML OK:', path)
+          PY
+      - name: Unit and end-to-end tests
+        run: PYTHONPATH=src python -m unittest discover -s tests -v
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.x"
+      - name: Install TypeScript tooling
+        working-directory: src/dashboard
+        run: bun install --frozen-lockfile
+      - name: TypeScript typecheck
+        working-directory: src/dashboard
+        run: bun run typecheck
+      - name: Build dashboard and browser bundle
+        working-directory: src/dashboard
+        run: bun run build
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose model
+        run: cp .env.example .env && docker compose config --quiet
 
   build:
-    needs: test
+    needs: [python, dashboard, compose]
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - { target: mcp, tag: mcp-latest }
-          - { target: dashboard, tag: dashboard-latest }
-          - { target: backup, tag: backup-latest }
+        target: [mcp, dashboard, backup]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Login to GHCR
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push (${{ matrix.target }})
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/novate911/novate-mcp
+          tags: |
+            type=raw,value=${{ matrix.target }}-latest,enable={{is_default_branch}}
+            type=raw,value=${{ matrix.target }}-${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+      - name: Build or publish ${{ matrix.target }}
         uses: docker/build-push-action@v6
         with:
           context: .
           target: ${{ matrix.target }}
-          push: true
-          tags: ghcr.io/novate911/novate-mcp:${{ matrix.tag }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [validate-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true

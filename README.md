@@ -417,3 +417,60 @@ docker compose down                  # остановить всё
 <div align="center">
 Сделано с ❤️ для автономных ИИ-агентов
 </div>
+
+
+## Версии, проверки и здоровье сервисов
+
+### Формат релиза
+
+Релизы используют формат `YY.M.RELEASE.BUILD`, например `26.8.1.001`:
+
+- `YY` — год;
+- `M` — месяц;
+- `RELEASE` — серия релиза; увеличивается после сборки `999`;
+- `BUILD` — трёхзначный номер сборки от `001` до `999`.
+
+Тег релиза автоматически создаёт три версионных образа:
+
+```text
+mcp-26.8.1.001
+dashboard-26.8.1.001
+backup-26.8.1.001
+```
+
+Ветка `main` продолжает публиковать `mcp-latest`, `dashboard-latest` и `backup-latest`.
+Для закрепления версии или отката задайте в `.env`:
+
+```dotenv
+NOVATE_VERSION=26.8.1.001
+```
+
+Затем выполните `docker compose pull && docker compose up -d`. Верните
+`NOVATE_VERSION=latest`, чтобы снова получать актуальные образы.
+
+### CI и безопасность
+
+Каждый Pull Request проверяет Python, Bun/TypeScript, сборку dashboard,
+Docker Compose и сборку всех Docker targets. Отдельный workflow запускает
+Gitleaks и Trivy; CodeQL продолжает анализировать Python и TypeScript.
+
+### Healthchecks и просроченные бэкапы
+
+Проверить состояние контейнеров:
+
+```bash
+docker compose ps
+docker inspect --format '{{json .State.Health}}' fastmcp-server
+docker inspect --format '{{json .State.Health}}' mcp-dashboard
+docker inspect --format '{{json .State.Health}}' novate-backup
+```
+
+Backup-сервис обновляет `/backups/.backup-heartbeat.json`. Если успешной копии
+нет дольше автоматического порога `max(2 интервала, интервал + 1 час)`, он один
+раз отправляет предупреждение в Telegram. Порог можно задать явно:
+
+```dotenv
+BACKUP_STALE_AFTER_HOURS=48
+```
+
+История изменений ведётся в [CHANGELOG.md](CHANGELOG.md).

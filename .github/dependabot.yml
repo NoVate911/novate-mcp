@@ -13,3 +13,10 @@ updates:
       interval: monthly
     labels: ["dependencies", "docker"]
     open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: "/src/dashboard"
+    schedule:
+      interval: monthly
+    labels: ["dependencies", "typescript"]
+    open-pull-requests-limit: 5

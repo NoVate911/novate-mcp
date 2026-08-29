@@ -44,6 +44,8 @@ RESTORE_FILE = CONFIG_DIR / "restore-now"
 S3_SYNC_TRIGGER = DATA_DIR / ".s3-sync-needed"
 # Статус последнего бэкапа для страницы «Бэкапы» в панели
 STATE_FILE = BACKUP_DIR / "last-backup.json"
+# Heartbeat читается Docker healthcheck; файл не содержит секретов.
+HEARTBEAT_FILE = BACKUP_DIR / ".backup-heartbeat.json"
 
 # Лимит sendDocument у Telegram-ботов — 50 МБ, берём с запасом
 MAX_TG_BYTES = 45 * 1024 * 1024
@@ -356,6 +358,63 @@ def last_run_time() -> float:
         return 0.0
 
 
+def last_success_time() -> float:
+    """Время последней успешной копии; ошибки не считаются успехом."""
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if data.get("error") or not data.get("file"):
+            return 0.0
+        return datetime.fromisoformat(data["time"]).timestamp()
+    except Exception:
+        return 0.0
+
+
+def stale_after_seconds() -> float:
+    """Через сколько без успешной копии отправлять предупреждение."""
+    raw = os.environ.get("BACKUP_STALE_AFTER_HOURS", "").strip()
+    if raw:
+        try:
+            return max(float(raw), 0.08) * 3600
+        except ValueError:
+            log(f"некорректный BACKUP_STALE_AFTER_HOURS={raw!r}; используется авто-порог")
+    interval = interval_seconds()
+    return max(interval * 2, interval + 3600)
+
+
+def write_heartbeat(state: str = "ok") -> None:
+    """Атомарно обновить heartbeat для Docker healthcheck."""
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = HEARTBEAT_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "updated": time.time(),
+            "state": state,
+        }, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, HEARTBEAT_FILE)
+    except OSError as exc:
+        log(f"не удалось обновить heartbeat: {exc}")
+
+
+def check_stale_backup(now: float, last_success: float, started_at: float,
+                       alerted: bool) -> bool:
+    """Один раз предупредить в Telegram, пока успешные копии просрочены."""
+    reference = last_success or started_at
+    age = max(0.0, now - reference)
+    threshold = stale_after_seconds()
+    if age <= threshold:
+        return False
+    if not alerted:
+        tg_text(
+            "⏰ <b>Резервная копия просрочена</b>\n\n"
+            f"<b>Без успешной копии:</b> {age / 3600:.1f} ч\n"
+            f"<b>Порог предупреждения:</b> {threshold / 3600:.1f} ч\n"
+            "Проверьте <code>docker compose logs backup</code>, свободное место "
+            "и настройки BACKUP_PASSWORD."
+        )
+        log(f"отправлено предупреждение о просроченном бэкапе ({age / 3600:.1f} ч)")
+    return True
+
+
 def trigger_mtime() -> float:
     """mtime самого свежего файла-триггера бэкапа — от панели или от
     MCP-инструмента make_backup (0 — триггеров нет)."""
@@ -383,13 +442,18 @@ def restore_request():
 
 def main() -> None:
     log("сервис бэкапов запущен")
+    started_at = time.time()
     # Перезапуск контейнера не должен порождать лишний бэкап —
     # время последнего запуска восстанавливаем из state-файла.
     last_run = last_run_time()
+    last_success = last_success_time()
+    stale_alerted = False
     # Старые файлы-триггеры (созданные до рестарта) — не новые команды.
     last_trigger = trigger_mtime()
     last_restore = restore_request()
+    write_heartbeat("starting")
     while True:
+        loop_state = "ok"
         try:
             req = restore_request()
             if req is not None and req != last_restore:
@@ -417,8 +481,14 @@ def main() -> None:
             elif time.time() - last_run >= interval_seconds():
                 run_backup("по расписанию")
                 last_run = time.time()
+            last_success = last_success_time()
+            stale_alerted = check_stale_backup(
+                time.time(), last_success, started_at, stale_alerted,
+            )
         except Exception as e:
+            loop_state = "error"
             log(f"ОШИБКА цикла: {e}")
+        write_heartbeat(loop_state)
         time.sleep(CHECK_EVERY)
 
 
