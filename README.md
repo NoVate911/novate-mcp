@@ -16,6 +16,23 @@
 
 ---
 
+## 🧭 Навигация
+
+- [Возможности](#features)
+- [Архитектура](#architecture)
+- [Структура проекта](#project-structure)
+- [Быстрый старт](#quick-start)
+- [Панель управления](#dashboard)
+- [S3 Storage](#s3-storage)
+- [Бэкапы](#backups)
+- [Настройки](#settings)
+- [Безопасность](#security)
+- [Версии, CI и healthchecks](#releases-health)
+- [Обновление](#updates)
+- [Полезные команды](#commands)
+- [Стек](#stack)
+
+<a id="features"></a>
 ## ✨ Возможности
 
 - 🤖 **11 инструментов для MCP-клиента** — файлы (`read_file`, `write_file`, `list_files`, `search_in_files`, `delete_file`, `move_file`), `run_command`, фоновые задачи (`run_background` + `poll_task`), `server_stats`, `make_backup`
@@ -30,6 +47,7 @@
 - 🌍 **Публичные сайты** — всё, что агент создаст в проекте, сразу открывается по ссылке
 - 🔄 **CI/CD из коробки** — пуш в `main` → GitHub Actions → GHCR → `docker compose pull` на сервере
 
+<a id="architecture"></a>
 ## 🏗 Архитектура
 
 ```
@@ -57,6 +75,7 @@ MCP-клиент ──HTTPS + Bearer──┐
 GitHub Actions собирает **три образа** из одного Dockerfile (multi-stage)
 в один GHCR-пакет с тегами `mcp-latest`, `dashboard-latest` и `backup-latest`.
 
+<a id="project-structure"></a>
 ## 📁 Структура проекта
 
 | Путь | Назначение |
@@ -78,6 +97,7 @@ GitHub Actions собирает **три образа** из одного Docker
 | `.github/workflows/build.yml` | GitHub Action: сборка всех образов в GHCR |
 | `AGENTS.md` | Инструкции для ИИ-агентов |
 
+<a id="quick-start"></a>
 ## 🚀 Быстрый старт
 
 ### Шаг 1. Подготовь репозиторий (один раз)
@@ -145,6 +165,7 @@ curl -i https://ДОМЕН/mcp/      # ожидается: 401 Unauthorized
 | Аутентификация | Bearer Token |
 | Токен | `MCP_TOKEN` из `~/mcp-server/.env` |
 
+<a id="dashboard"></a>
 ## 📊 Панель управления
 
 Вход — только через Telegram (OpenID Connect): нажми «Войти через Telegram»,
@@ -178,6 +199,7 @@ curl -i https://ДОМЕН/mcp/      # ожидается: 401 Unauthorized
 Панель монтирует проекты в режиме **только чтение**: изменять файлы
 может только MCP.
 
+<a id="s3-storage"></a>
 ## ☁️ S3 Storage
 
 S3 — **опциональное постоянное хранилище**, а не файловая система контейнера.
@@ -299,6 +321,7 @@ docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
 Сообщения не содержат secret key. Проверь endpoint, region, имя bucket, права ключа,
 сетевой доступ и затем выполни `docker compose up -d mcp`.
 
+<a id="backups"></a>
 ## 🗄 Бэкапы
 
 Фоновый контейнер `backup` раз в `BACKUP_INTERVAL_HOURS` часов
@@ -327,6 +350,7 @@ docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
   применяются в течение минуты, без перезапуска.
 - Логи сервиса: `docker compose logs -f backup`.
 
+<a id="settings"></a>
 ## ⚙️ Настройки
 
 Все значения живут в `.env` на сервере (не коммитится!).
@@ -361,6 +385,7 @@ docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
 Для автоматического применения `MCP_TOKEN` контейнеру dashboard не выдаётся
 опасный доступ к Docker socket: MCP-процесс сам отслеживает изменение и делает re-exec.
 
+<a id="security"></a>
 ## 🔐 Безопасность
 
 - MCP отвергает запросы без токена (проверка: `curl` выше отдаёт 401).
@@ -386,39 +411,7 @@ docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
 - Всё в `projects/` публично по ссылкам `/projects/...` — это нужно для
   просмотра созданных сайтов. Панель при этом доступна только после входа.
 
-## 🔄 Обновление
-
-```bash
-# 1. Запушил изменения в main -> Actions собрал новые образы
-# 2. На сервере:
-cd ~/mcp-server
-docker compose pull
-docker compose up -d
-```
-
-## 🛠 Полезные команды
-
-```bash
-cd ~/mcp-server
-docker compose ps                    # статус контейнеров
-docker compose logs -f mcp           # логи MCP-сервера
-docker compose logs -f dashboard     # логи панели (тут ID отклонённых входов)
-docker compose logs -f backup        # логи бэкапов
-docker compose restart               # перезапуск
-docker compose down                  # остановить всё
-```
-
-## 🧰 Стек
-
-**FastMCP + boto3** (Python) · **Bun + TypeScript** (панель) · **Python stdlib** (бэкапы) · **Docker Compose** · **Caddy** · **Telegram OIDC + Bot API** · **GitHub Actions** · **GHCR**
-
----
-
-<div align="center">
-Сделано с ❤️ для автономных ИИ-агентов
-</div>
-
-
+<a id="releases-health"></a>
 ## Версии, проверки и здоровье сервисов
 
 ### Формат релиза
@@ -474,3 +467,38 @@ BACKUP_STALE_AFTER_HOURS=48
 ```
 
 История изменений ведётся в [CHANGELOG.md](CHANGELOG.md).
+
+<a id="updates"></a>
+## 🔄 Обновление
+
+```bash
+# 1. Запушил изменения в main -> Actions собрал новые образы
+# 2. На сервере:
+cd ~/mcp-server
+docker compose pull
+docker compose up -d
+```
+
+<a id="commands"></a>
+## 🛠 Полезные команды
+
+```bash
+cd ~/mcp-server
+docker compose ps                    # статус контейнеров
+docker compose logs -f mcp           # логи MCP-сервера
+docker compose logs -f dashboard     # логи панели (тут ID отклонённых входов)
+docker compose logs -f backup        # логи бэкапов
+docker compose restart               # перезапуск
+docker compose down                  # остановить всё
+```
+
+<a id="stack"></a>
+## 🧰 Стек
+
+**FastMCP + boto3** (Python) · **Bun + TypeScript** (панель) · **Python stdlib** (бэкапы) · **Docker Compose** · **Caddy** · **Telegram OIDC + Bot API** · **GitHub Actions** · **GHCR**
+
+---
+
+<div align="center">
+Сделано с ❤️ для автономных ИИ-агентов
+</div>
