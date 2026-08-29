@@ -44,6 +44,8 @@ export function toast(message: string, kind: ToastKind = "info"): string {
 }
 
 const CSS = `
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700;800&display=swap");
+
 :root {
   --bg: #0b0e11;
   --surface: #11151b;
@@ -58,9 +60,17 @@ const CSS = `
 * { margin: 0; padding: 0; box-sizing: border-box;
     -webkit-user-select: none; -moz-user-select: none; user-select: none; }
 input, textarea { -webkit-user-select: text; -moz-user-select: text; user-select: text; }
+button, input, select, textarea { font: inherit; }
+code, pre, .val, .generated-secret {
+  font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-variant-ligatures: none;
+}
 html { color-scheme: dark; }
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  font-family: "Manrope", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  font-size: 14px; font-weight: 500; line-height: 1.5;
+  font-optical-sizing: auto; text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   background: var(--bg); color: var(--text); min-height: 100vh;
 }
 body::before {
@@ -83,7 +93,7 @@ body::before {
 }
 .topbar-inner { max-width: 1020px; margin: 0 auto; padding: 16px 20px;
   display: flex; justify-content: space-between; align-items: center; }
-h1 { font-size: 20px; font-weight: 700; letter-spacing: .3px; }
+h1 { font-size: 20px; font-weight: 800; letter-spacing: -.35px; }
 h1 span { color: var(--accent); }
 h1 a { color: inherit; text-decoration: none; }
 .nav a {
@@ -211,7 +221,7 @@ a:hover { text-decoration: underline; }
 .badge.env { background: rgba(139, 148, 160, .14); color: var(--muted); }
 .badge.panel { background: var(--accent-soft); color: var(--accent); }
 .hint { color: var(--muted); opacity: .8; font-size: 12px; margin-top: 7px; line-height: 1.55; }
-.val { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 14px; }
+.val { font-size: 13px; font-weight: 500; }
 form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .note {
   background: var(--surface); border: 1px solid var(--border);
@@ -258,7 +268,7 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .generated-secret {
   display: block; margin: 10px 0; padding: 9px 11px; border-radius: 8px;
   background: var(--bg); color: var(--accent); overflow-wrap: anywhere;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-family: "JetBrains Mono", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   -webkit-user-select: text; -moz-user-select: text; user-select: text;
 }
 .secret-copy { padding: 7px 12px; font-size: 12px; }

@@ -536,17 +536,19 @@ async function runProcess(args: string[]): Promise<ProcessResult> {
   return { code, stdout, stderr };
 }
 
-function streamDirectoryArchive(directory: string, downloadName: string): Response {
+function streamDirectoryZip(directory: string, downloadName: string): Response {
+  // ZIP содержит центральный каталог с размерами каждого файла и нативно открывается
+  // проводником Windows. Уровень -1 ускоряет упаковку больших проектов.
   const packed = Bun.spawn([
-    "tar", "-czf", "-", "-C", dirname(directory), "--", basename(directory),
-  ], { stdout: "pipe", stderr: "pipe" });
+    "zip", "-r", "-1", "-q", "-", basename(directory),
+  ], { cwd: dirname(directory), stdout: "pipe", stderr: "pipe" });
   const stderr = new Response(packed.stderr).text();
   void Promise.all([packed.exited, stderr]).then(([code, message]) => {
-    if (code !== 0) console.error("Потоковая архивация папки завершилась с ошибкой:", message);
+    if (code !== 0) console.error("Потоковая ZIP-архивация папки завершилась с ошибкой:", message);
   });
   return new Response(packed.stdout, {
     headers: {
-      "Content-Type": "application/gzip",
+      "Content-Type": "application/zip",
       "Content-Disposition":
         `attachment; filename="${downloadName.replace(/[^\x20-\x7E]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
       "Cache-Control": "no-store",
@@ -946,9 +948,9 @@ async function route(req: Request): Promise<Response> {
     if (!target) return redirect("/");
     try {
       if (!statSync(target).isDirectory()) return redirect("/");
-      return streamDirectoryArchive(target, name + ".tar.gz");
+      return streamDirectoryZip(target, name + ".zip");
     } catch (err) {
-      console.error("Не удалось начать потоковую архивацию проекта:", err);
+      console.error("Не удалось начать потоковую ZIP-архивацию проекта:", err);
       return redirect("/?error=project-archive");
     }
   }
@@ -960,9 +962,9 @@ async function route(req: Request): Promise<Response> {
     if (!target) return redirect("/");
     try {
       if (!statSync(target).isDirectory() || target === DATA_DIR) return redirect("/");
-      return streamDirectoryArchive(target, basename(target) + ".tar.gz");
+      return streamDirectoryZip(target, basename(target) + ".zip");
     } catch (err) {
-      console.error("Не удалось начать потоковую архивацию папки:", err);
+      console.error("Не удалось начать потоковую ZIP-архивацию папки:", err);
       return redirect("/browse/" + encodeURIComponent(dirname(rel)));
     }
   }

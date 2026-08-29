@@ -27,9 +27,9 @@ FROM oven/bun:1 AS dashboard
 
 WORKDIR /app
 
-# Архивация проектов и проверка/расшифровка загружаемых бэкапов
+# ZIP-скачивание проектов и проверка/расшифровка загружаемых бэкапов
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tar openssl \
+    && apt-get install -y --no-install-recommends zip tar openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY src/dashboard/ ./
