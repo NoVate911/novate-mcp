@@ -253,7 +253,7 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
   ALLOWED_TG_USERS; allowlist проверяется на КАЖДЫЙ запрос.
 - Сессионная cookie — HMAC-подписанная (ключ SESSION_SECRET),
   HttpOnly + Secure + SameSite=Lax, TTL 7 дней; подписи сравниваются через
-  sha256 + timingSafeEqual (не сравнивай секреты напрямую — утекает длина).
+  scrypt-derived HMAC-SHA-256 key + timingSafeEqual по 32-байтовым подписям (не сравнивай секреты напрямую — утекает длина).
 - Бэкапы содержат overrides.json — там могут лежать переопределённые
   секреты. Чат TG_CHAT_ID и папка backups/ = хранилища секретов.
 - Контейнеры работают не от root (uid 1000). Панель монтирует проекты

@@ -397,7 +397,7 @@ docker compose exec mcp sh -c 'test "$S3_ENABLED" = true && echo enabled'
   теряет доступ мгновенно.
 - Сессия панели — HMAC-подписанная cookie (ключ `SESSION_SECRET`),
   HttpOnly + Secure + SameSite=Lax, живёт 7 дней.
-- Подписи сравниваются через sha256 + timingSafeEqual (без утечки длины).
+- Ключ подписи выводится из `SESSION_SECRET` через memory-hard scrypt; HMAC-SHA-256 подписи сравниваются через timingSafeEqual без утечки длины.
 - Все файловые операции ограничены папкой проектов — защита от `../` в коде
   + Docker-монтирование только этой папки.
 - `run_command` выполняется **внутри контейнера**, а не на хосте.

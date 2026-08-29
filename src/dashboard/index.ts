@@ -23,7 +23,7 @@
  */
 
 import {
-  createHash, createHmac, createPublicKey, randomBytes,
+  createHash, createHmac, createPublicKey, randomBytes, scryptSync,
   timingSafeEqual, verify as cryptoVerify,
 } from "node:crypto";
 import {
@@ -98,17 +98,38 @@ const EDITABLE: EditableSetting[] = [
 
 // ---------- безопасность ----------
 
-function sha256(s: string): Buffer {
-  return createHash("sha256").update(s).digest();
+const SESSION_KDF_SALT = "novate-mcp/session-signing-key/v1";
+let cachedSessionSecret = "";
+let cachedSessionKey: Buffer | null = null;
+
+/**
+ * SESSION_SECRET может быть введён вручную, поэтому перед использованием в
+ * HMAC получаем отдельный 256-битный ключ через memory-hard scrypt. Кэш
+ * сбрасывается автоматически после смены секрета в панели.
+ */
+function sessionSigningKey(): Buffer {
+  const sessionSecret = settings.get("SESSION_SECRET");
+  if (!cachedSessionKey || sessionSecret !== cachedSessionSecret) {
+    cachedSessionSecret = sessionSecret;
+    cachedSessionKey = scryptSync(sessionSecret, SESSION_KDF_SALT, 32, {
+      N: 1 << 15,
+      r: 8,
+      p: 1,
+      maxmem: 64 * 1024 * 1024,
+    });
+  }
+  return cachedSessionKey;
 }
 
-function hmac(secret: string, data: string): string {
-  return createHmac("sha256", secret).update(data).digest("hex");
+function sessionSignature(data: string): string {
+  return createHmac("sha256", sessionSigningKey()).update(data).digest("hex");
 }
 
-/** Сравнение через sha256 + timingSafeEqual — длина строк не утекает. */
-function eqStr(a: string, b: string): boolean {
-  return timingSafeEqual(sha256(a), sha256(b));
+/** Constant-time сравнение двух HMAC-SHA-256 подписей фиксированной длины. */
+function eqSignature(a: string, b: string): boolean {
+  const left = Buffer.from(a, "hex");
+  const right = Buffer.from(b, "hex");
+  return left.length === 32 && right.length === 32 && timingSafeEqual(left, right);
 }
 
 function b64url(buf: Buffer): string {
@@ -119,7 +140,7 @@ function b64url(buf: Buffer): string {
 /** Подписанное HMAC значение cookie: base64url(payload).hex-подпись. */
 function packSigned(payload: Record<string, unknown>): string {
   const p = b64url(Buffer.from(JSON.stringify(payload), "utf8"));
-  return `${p}.${hmac(settings.get("SESSION_SECRET"), p)}`;
+  return `${p}.${sessionSignature(p)}`;
 }
 
 /** Проверка подписи и срока жизни подписанного значения cookie. */
@@ -128,7 +149,7 @@ function unpackSigned(cookie: string, ttl: number): Record<string, unknown> | nu
   if (dot < 0) return null;
   const p = cookie.slice(0, dot);
   const sig = cookie.slice(dot + 1);
-  if (!p || !sig || !eqStr(sig, hmac(settings.get("SESSION_SECRET"), p))) return null;
+  if (!p || !sig || !eqSignature(sig, sessionSignature(p))) return null;
   try {
     const data = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as Record<string, unknown>;
     if (typeof data.ts !== "number") return null;
