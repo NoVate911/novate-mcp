@@ -17,6 +17,7 @@
 применяются без перезапуска контейнера (в течение минуты).
 """
 
+import html
 import json
 import os
 import re
@@ -195,7 +196,12 @@ def tg_text(text: str) -> None:
     if not token or not chat_id:
         return
     try:
-        tg_api(token, "sendMessage", {"chat_id": chat_id, "text": text})
+        tg_api(token, "sendMessage", {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        })
     except Exception as e:
         log(f"не удалось отправить уведомление: {e}")
 
@@ -210,15 +216,18 @@ def send_to_telegram(archive: Path, caption: str) -> str:
         size = archive.stat().st_size
         if size <= MAX_TG_BYTES:
             tg_api(token, "sendDocument",
-                   {"chat_id": chat_id, "caption": caption},
+                   {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
                    "document", archive)
         else:
             tg_api(token, "sendMessage", {
                 "chat_id": chat_id,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
                 "text": caption + (
-                    f"\n\n⚠️ Архив {size / 1048576:.1f} МБ — это больше лимита "
-                    "Telegram для ботов (50 МБ). Архив сохранён на сервере: "
-                    "заберите его в панели (раздел «Бэкапы») или из папки backups."
+                    f"\n\n⚠️ <b>Файл не прикреплён</b>\n"
+                    f"Размер архива — {size / 1048576:.1f} МБ, что превышает лимит "
+                    "Telegram Bot API (50 МБ).\n"
+                    "Архив сохранён на сервере и доступен в разделе «Бэкапы»."
                 ),
             })
         return "ok"
@@ -245,14 +254,19 @@ def run_backup(reason: str) -> None:
         size = archive.stat().st_size
         prune()
         caption = (
-            "🗄 Бэкап NoVate MCP\n"
-            f"📦 {archive.name}\n"
-            f"📁 Файлов в проектах: {files}\n"
-            f"💾 Размер: {size / 1048576:.2f} МБ"
+            "🗄 <b>Резервная копия создана</b>\n\n"
+            f"<b>Файл:</b> <code>{html.escape(archive.name)}</code>\n"
+            f"<b>Размер:</b> {size / 1048576:.2f} МБ\n"
+            f"<b>Файлов:</b> {files}\n"
+            f"<b>Запуск:</b> {html.escape(reason)}\n"
+            f"<b>Защита:</b> {'AES-256 🔐' if encrypted else 'без шифрования'}"
         )
         if encrypted:
-            caption += ("\n🔐 Зашифрован AES-256 (BACKUP_PASSWORD). Расшифровка: "
-                        "openssl enc -d -aes-256-cbc -pbkdf2 -in <файл> -out backup.tar.gz")
+            caption += (
+                "\n\n<i>Для расшифровки используйте BACKUP_PASSWORD и команду:</i>\n"
+                "<code>openssl enc -d -aes-256-cbc -pbkdf2 -in &lt;файл&gt; "
+                "-out backup.tar.gz</code>"
+            )
         tg = send_to_telegram(archive, caption)
         log(f"готово: {archive.name} ({size} байт), telegram={tg}, encrypted={encrypted}")
         write_status({
@@ -262,7 +276,11 @@ def run_backup(reason: str) -> None:
         })
     except Exception as e:
         log(f"ОШИБКА: {e}")
-        tg_text(f"⚠️ NoVate MCP: бэкап не удался ({reason}): {e}")
+        tg_text(
+            "⚠️ <b>Ошибка резервного копирования</b>\n\n"
+            f"<b>Запуск:</b> {html.escape(reason)}\n"
+            f"<b>Причина:</b> {html.escape(str(e))}"
+        )
         write_status({
             "time": datetime.now(timezone.utc).isoformat(),
             "error": str(e), "reason": reason,
@@ -308,8 +326,12 @@ def do_restore(name: str) -> None:
                 tar.extract(member, DATA_DIR, filter="data")
                 restored += 1
         log(f"восстановлено объектов: {restored}")
-        tg_text(f"♻️ NoVate MCP: проекты восстановлены из архива {name}\n"
-                f"Страховочная копия состояния до восстановления: {snapshot.name}")
+        tg_text(
+            "✅ <b>Восстановление завершено</b>\n\n"
+            f"<b>Архив:</b> <code>{html.escape(name)}</code>\n"
+            f"<b>Восстановлено объектов:</b> {restored}\n"
+            f"<b>Страховочная копия:</b> <code>{html.escape(snapshot.name)}</code>"
+        )
         write_status({
             "time": datetime.now(timezone.utc).isoformat(),
             "restore": f"ok: {name} (объектов: {restored})",
@@ -373,8 +395,11 @@ def main() -> None:
                         do_restore(req[0])
                     except Exception as e:
                         log(f"ОШИБКА восстановления: {e}")
-                        tg_text(f"⚠️ NoVate MCP: восстановление из {req[0]} "
-                                f"не удалось: {e}")
+                        tg_text(
+                            "⚠️ <b>Ошибка восстановления</b>\n\n"
+                            f"<b>Архив:</b> <code>{html.escape(req[0])}</code>\n"
+                            f"<b>Причина:</b> {html.escape(str(e))}"
+                        )
                         write_status({
                             "time": datetime.now(timezone.utc).isoformat(),
                             "restore": f"error: {e}",

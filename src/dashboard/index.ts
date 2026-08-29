@@ -52,14 +52,13 @@ const TG_ISSUER = "https://oauth.telegram.org";
 
 // Редактируемые в панели настройки
 type SettingMode = "text" | "external-secret" | "generated-secret";
-type SettingSection = "telegram" | "configuration" | "access" | "backups";
+type SettingSection = "telegram" | "access" | "backups";
 type EditableSetting = {
   key: string; label: string; hint: string; mode: SettingMode; section: SettingSection;
 };
 
 const SETTING_SECTIONS: Array<{ id: SettingSection; label: string; description: string }> = [
   { id: "telegram", label: "Telegram", description: "Вход через Telegram и отправка бэкапов в чат." },
-  { id: "configuration", label: "Конфигурация", description: "Основные параметры панели и домена." },
   { id: "access", label: "Доступ и безопасность", description: "Сессии панели и токен MCP-доступа." },
   { id: "backups", label: "Бэкапы", description: "Расписание, хранение и шифрование резервных копий." },
 ];
@@ -79,9 +78,6 @@ const EDITABLE: EditableSetting[] = [
   { key: "MCP_TOKEN", label: "Токен MCP-доступа (Bearer)",
     hint: "Генерируется панелью. MCP-сервис автоматически перечитает токен и перезапустит свой процесс.",
     mode: "generated-secret", section: "access" },
-  { key: "DOMAIN", label: "Домен сервера",
-    hint: "Ссылки в панели и callback Telegram — сразу. HTTPS-домен Caddy меняется через .env + install.sh.",
-    mode: "text", section: "configuration" },
   { key: "TG_BOT_TOKEN", label: "Токен Telegram-бота",
     hint: "Выдаётся @BotFather, поэтому локально не генерируется. Применяется в течение минуты.",
     mode: "external-secret", section: "telegram" },
@@ -174,7 +170,13 @@ function sessionOf(req: Request): Session | null {
 
 // ---------- уведомления в Telegram ----------
 
-/** Неблокирующее уведомление в Telegram (бот для бэкапов). Ошибки — только в лог. */
+function tgEsc(value: unknown): string {
+  return String(value)
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
+/** Неблокирующее HTML-уведомление в Telegram. Динамические значения передавать через tgEsc(). */
 function tgNotify(text: string): void {
   const token = settings.get("TG_BOT_TOKEN");
   const chatId = settings.get("TG_CHAT_ID");
@@ -182,7 +184,7 @@ function tgNotify(text: string): void {
   fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true }),
   }).catch((err) => console.error("tgNotify failed:", err));
 }
 
@@ -642,28 +644,34 @@ function backupsPage(url: URL, user: string): string {
   let statusHtml: string;
   if (st?.error) {
     statusHtml = `<div class="note rise" style="border-left-color:#ff5a6e">`
-      + `Последний бэкап завершился ошибкой: ${esc(st.error)}`
-      + `${st.time ? ` (${esc(fmtTime(Date.parse(st.time)))})` : ""}</div>`;
+      + `<b>Не удалось создать резервную копию</b><br>`
+      + `${esc(st.error)}${st.time ? `<br><span class="hint">${esc(fmtTime(Date.parse(st.time)))}</span>` : ""}</div>`;
   } else if (st?.time) {
-    const tg = st.telegram === "ok"
-      ? " · отправлен в Telegram ✅"
+    const telegramLine = st.telegram === "ok"
+      ? "Отправлено в Telegram ✅"
       : st.telegram === "skipped"
-        ? " · Telegram не настроен (заполни TG_BOT_TOKEN и TG_CHAT_ID)"
+        ? "Telegram не настроен — копия сохранена только на сервере"
         : st.telegram && st.telegram.startsWith("error")
-          ? ` · ошибка отправки в Telegram: ${esc(st.telegram.slice(7).trim())}`
-          : "";
+          ? `Ошибка отправки в Telegram: ${esc(st.telegram.slice(7).trim())}`
+          : "Статус отправки в Telegram неизвестен";
     const intervalH = Number(settings.get("BACKUP_INTERVAL_HOURS")) || 24;
     const next = Date.parse(st.time) + intervalH * 3600_000;
-    const nextStr = Number.isFinite(next)
-      ? `<div class="hint">Следующий по расписанию: ${esc(fmtTime(next))} · интервал ${esc(String(intervalH))} ч</div>`
+    const nextLine = Number.isFinite(next)
+      ? `<br><span class="hint">Следующая копия: ${esc(fmtTime(next))}</span>`
       : "";
-    const enc = st.encrypted ? " · 🔐 зашифрован" : "";
-    const rst = st.restore ? `<div class="hint">Восстановление: ${esc(st.restore)}</div>` : "";
-    statusHtml = `<div class="note rise">Последний бэкап: <b>${esc(st.file || "—")}</b>`
-      + ` · ${humanSize(st.size || 0)} · ${esc(fmtTime(Date.parse(st.time)))}${enc}${tg}${nextStr}${rst}</div>`;
+    const restoreLine = st.restore
+      ? `<br><span class="hint">Восстановление: ${esc(st.restore)}</span>`
+      : "";
+    statusHtml = `<div class="note rise"><b>Последняя резервная копия</b><br>`
+      + `Файл: <b>${esc(st.file || "—")}</b><br>`
+      + `Размер: ${humanSize(st.size || 0)}<br>`
+      + `Создана: ${esc(fmtTime(Date.parse(st.time)))}<br>`
+      + `Защита: ${st.encrypted ? "AES-256 🔐" : "без шифрования"}<br>`
+      + `Telegram: ${telegramLine}${nextLine}${restoreLine}</div>`;
   } else {
-    statusHtml = `<div class="note rise">Бэкапов ещё не было. Первый создаётся автоматически `
-      + `после запуска сервиса, дальше — по расписанию (BACKUP_INTERVAL_HOURS) или кнопкой ниже.</div>`;
+    statusHtml = `<div class="note rise"><b>Резервных копий пока нет</b><br>`
+      + `Сервис создаст первую копию автоматически. Также можно запустить создание `
+      + `вручную кнопкой ниже.</div>`;
   }
 
   let rows = "";
@@ -701,13 +709,7 @@ function backupsPage(url: URL, user: string): string {
     + `data-auto-submit-file required></label></form></div>`
     + `<div class="panel rise" style="margin-top:24px"><table>`
     + `<thead><tr><th>Архив</th><th>Размер</th><th>Дата</th><th></th></tr></thead>`
-    + `<tbody>${rows}</tbody></table></div>`
-    + `<div class="hint" style="margin-top:16px">В архив входят проекты и настройки панели. `
-    + `Локально хранятся последние BACKUP_KEEP копий (папка backups на сервере), `
-    + `каждый архив отправляется в Telegram (TG_BOT_TOKEN → TG_CHAT_ID). `
-    + `Если задан BACKUP_PASSWORD — архивы шифруются (AES-256, файлы .enc). `
-    + `Загружаемые архивы проверяются по имени, формату, структуре и безопасности содержимого. `
-    + `«Восстановить» перезаписывает проекты из выбранного архива.</div></div>`);
+    + `<tbody>${rows}</tbody></table></div></div>`);
 }
 
 type GeneratedSecret = { key: string; value: string };
@@ -734,7 +736,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   }
 
   const rows: Record<SettingSection, string[]> = {
-    telegram: [], configuration: [], access: [], backups: [],
+    telegram: [], access: [], backups: [],
   };
   for (const item of EDITABLE) {
     const effective = settings.get(item.key);
@@ -778,10 +780,11 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   }
 
   const noteBlock =
-    `<div class="note rise">Обычные значения показаны прямо в полях: их можно дополнять, редактировать и очищать. `
-    + `Локальные секреты создаются кнопкой «Сгенерировать новый» и показываются один раз для копирования. `
-    + `TG_CLIENT_SECRET и TG_BOT_TOKEN выдаёт Telegram — их можно только заменить вручную. `
-    + `Кнопка «По умолчанию» удаляет переопределение и возвращает значение из .env.</div>`;
+    `<div class="note rise"><b>Управление настройками</b><br>`
+    + `Изменения сохраняются как переопределения и применяются автоматически.<br>`
+    + `Обычные значения можно редактировать полностью, а локальные секреты — безопасно создавать заново.<br>`
+    + `Секреты Telegram заменяются вручную, поскольку их выдаёт @BotFather. `
+    + `Кнопка «По умолчанию» возвращает значение из .env.</div>`;
 
   const requestedTab = url.searchParams.get("tab") as SettingSection | null;
   const activeTab = SETTING_SECTIONS.some((section) => section.id === requestedTab)
@@ -891,7 +894,14 @@ async function route(req: Request): Promise<Response> {
     }
     if (!allowedUsers().has(sub)) {
       console.log(`Отказано во входе: Telegram ID ${sub} не в ALLOWED_TG_USERS`);
-      tgNotify("⛔ Отклонена попытка входа в панель NoVate MCP: Telegram ID " + sub);
+      tgNotify(`⛔ <b>Вход отклонён</b>
+
+`
+        + `<b>Панель:</b> NoVate MCP
+`
+        + `<b>Telegram ID:</b> <code>${tgEsc(sub)}</code>
+`
+        + `<b>Причина:</b> пользователь отсутствует в списке разрешённых.`);
       return redirect("/login?err=denied", { "Set-Cookie": clearState });
     }
     const name = typeof claims.name === "string" && claims.name
@@ -900,7 +910,12 @@ async function route(req: Request): Promise<Response> {
         ? "@" + claims.preferred_username
         : `ID ${sub}`;
     const session = packSigned({ uid: sub, name, ts: Math.floor(Date.now() / 1000) });
-    tgNotify("🔑 Вход в панель NoVate MCP: " + name + " (ID " + sub + ")");
+    tgNotify(`🔐 <b>Выполнен вход в панель</b>
+
+`
+      + `<b>Пользователь:</b> ${tgEsc(name)}
+`
+      + `<b>Telegram ID:</b> <code>${tgEsc(sub)}</code>`);
     return redirectCookies("/", [
       clearState,
       cookieStr(COOKIE_NAME, session, COOKIE_TTL),
@@ -1021,7 +1036,14 @@ async function route(req: Request): Promise<Response> {
         }
       } catch { /* имя свободно */ }
       copyFileSync(upload, target);
-      tgNotify("🗄 Загружен и проверен бэкап " + name + " (пользователь " + session.name + ")");
+      tgNotify(`📥 <b>Бэкап загружен</b>
+
+`
+        + `<b>Файл:</b> <code>${tgEsc(name)}</code>
+`
+        + `<b>Проверка:</b> пройдена успешно
+`
+        + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
       return redirect("/backups?uploaded=1");
     } catch (err) {
       console.error("Не удалось загрузить бэкап:", err);
@@ -1039,8 +1061,14 @@ async function route(req: Request): Promise<Response> {
     try {
       if (!statSync(resolve(BACKUP_DIR, file)).isFile()) return redirect("/backups");
       writeFileSync(`${CONFIG_DIR}/restore-now`, file, "utf8");
-      tgNotify("♻️ Запрошено восстановление проектов из архива " + file
-        + " (пользователь " + session.name + ")");
+      tgNotify(`♻️ <b>Запущено восстановление</b>
+
+`
+        + `<b>Архив:</b> <code>${tgEsc(file)}</code>
+`
+        + `<b>Пользователь:</b> ${tgEsc(session.name)}
+`
+        + `<i>Перед восстановлением будет создана страховочная копия.</i>`);
     } catch (err) {
       console.error("Не удалось создать триггер восстановления:", err);
     }
@@ -1077,13 +1105,27 @@ async function route(req: Request): Promise<Response> {
     if (!item) return redirect("/settings");
     if (action === "reset") {
       settings.clearOverride(key);
-      tgNotify("⚙️ Настройка " + key + " сброшена к .env (пользователь " + session.name + ")");
+      tgNotify(`⚙️ <b>Настройка сброшена</b>
+
+`
+        + `<b>Параметр:</b> <code>${tgEsc(key)}</code>
+`
+        + `<b>Источник:</b> .env
+`
+        + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
       return redirect(`/settings?tab=${item.section}&reset=1`);
     }
     if (action === "generate" && item.mode === "generated-secret") {
       const value = randomBytes(32).toString("hex");
       settings.setOverride(key, value);
-      tgNotify("⚙️ Сгенерировано новое значение " + key + " (пользователь " + session.name + ")");
+      tgNotify(`🔑 <b>Создан новый секрет</b>
+
+`
+        + `<b>Параметр:</b> <code>${tgEsc(key)}</code>
+`
+        + `<b>Пользователь:</b> ${tgEsc(session.name)}
+`
+        + `<i>Значение секрета в Telegram не отправляется.</i>`);
       const settingsUrl = new URL(url);
       settingsUrl.searchParams.set("tab", item.section);
       return html(settingsPage(settingsUrl, session.name, { key, value }));
@@ -1092,7 +1134,12 @@ async function route(req: Request): Promise<Response> {
       const value = String(form.get("value") || "").trim();
       if (item.mode === "text" || value) {
         settings.setOverride(key, value);
-        tgNotify("⚙️ Настройка " + key + " изменена из панели (пользователь " + session.name + ")");
+        tgNotify(`⚙️ <b>Настройка изменена</b>
+
+`
+          + `<b>Параметр:</b> <code>${tgEsc(key)}</code>
+`
+          + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
       }
       return redirect(`/settings?tab=${item.section}&saved=1`);
     }
