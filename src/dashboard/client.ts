@@ -27,12 +27,11 @@ document.querySelectorAll<HTMLElement>("[data-toast]").forEach((el) => {
     el.classList.add("toast-leave");
     window.setTimeout(() => el.closest(".toast-stack")?.remove(), 240);
   };
-  if (!el.hasAttribute("data-toast-persistent")) timer = window.setTimeout(close, 5000);
+  const duration = Number(el.dataset.toastDuration || "5000");
+  timer = window.setTimeout(close, Number.isFinite(duration) ? duration : 5000);
   el.querySelector<HTMLButtonElement>(".toast-close")?.addEventListener("click", close);
   el.addEventListener("mouseenter", () => window.clearTimeout(timer));
-  el.addEventListener("mouseleave", () => {
-    if (!el.hasAttribute("data-toast-persistent")) timer = window.setTimeout(close, 1800);
-  });
+  el.addEventListener("mouseleave", () => { timer = window.setTimeout(close, 1800); });
 });
 
 
@@ -63,7 +62,6 @@ document.querySelectorAll<HTMLElement>("[data-filter-root]").forEach((root) => {
   const period = controls.querySelector<HTMLSelectElement>("[data-filter-period]");
   const sort = controls.querySelector<HTMLSelectElement>("[data-filter-sort]");
   const order = controls.querySelector<HTMLSelectElement>("[data-filter-order]");
-  const count = controls.querySelector<HTMLElement>("[data-filter-count]");
   const empty = root.querySelector<HTMLElement>("[data-filter-empty]");
   const collator = new Intl.Collator("ru", { numeric: true, sensitivity: "base" });
 
@@ -93,7 +91,6 @@ document.querySelectorAll<HTMLElement>("[data-filter-root]").forEach((root) => {
       if (!item.hidden) visible++;
       list.append(item);
     }
-    if (count) count.textContent = `${visible} из ${items.length}`;
     if (empty) empty.hidden = visible > 0;
   };
 

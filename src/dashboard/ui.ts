@@ -142,7 +142,7 @@ a.tag:hover { color: var(--accent); border-color: var(--accent); }
 /* ---- таблицы ---- */
 /* ---- поиск и фильтры ---- */
 .filters {
-  display: grid; grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(130px, auto)) auto;
+  display: grid; grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(130px, auto));
   gap: 10px; align-items: center; margin-bottom: 18px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px;
 }
@@ -155,7 +155,6 @@ a.tag:hover { color: var(--accent); border-color: var(--accent); }
 .filters input[type=search]:focus, .filters select:focus {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.filter-count { color: var(--muted); font-size: 12px; white-space: nowrap; text-align: right; }
 .filter-empty { padding: 36px 0; }
 [hidden] { display: none !important; }
 
@@ -231,7 +230,7 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .toast-close:hover { color: var(--text); }
 .toast-progress {
   position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: currentColor;
-  color: var(--accent); transform-origin: left; animation: toast-progress 4.8s linear forwards; opacity: .75;
+  color: var(--accent); transform-origin: left; animation: toast-progress var(--toast-duration, 5s) linear forwards; opacity: .75;
 }
 .toast-error .toast-progress { color: #ff5a6e; }
 .toast-info .toast-progress { color: #58a6ff; }
@@ -296,7 +295,6 @@ form.inline input { flex: 1; min-width: 180px; }
 @media (max-width: 860px) {
   .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filters input[type=search] { grid-column: 1 / -1; }
-  .filter-count { text-align: left; }
   .panel { overflow-x: auto; }
   table { min-width: 720px; }
 }
@@ -322,7 +320,7 @@ export function shell(title: string, content: string): string {
     + `<meta name="viewport" content="width=device-width, initial-scale=1">`
     + `<title>${esc(title)}</title><style>${CSS}</style></head><body>`
     + content
-    + `<script src="/static/client.js" defer></script></body></html>`;
+    + `<script src="/static/client.js?v=5" defer></script></body></html>`;
 }
 
 /** Липкая шапка с навигацией. */

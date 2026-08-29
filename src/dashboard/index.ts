@@ -30,7 +30,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import * as settings from "./settings.ts";
 import { esc, fmtTime, header, humanSize, loginPage, mask, shell, toast } from "./ui.ts";
 
@@ -369,7 +369,7 @@ function indexPage(url: URL, user: string): string {
     ? toast("Не удалось начать скачивание проекта.", "error")
     : "";
   const cards: string[] = [];
-  let totalSize = 0, totalFiles = 0;
+  let totalSize = 0;
   let names: string[] = [];
   try {
     names = readdirSync(DATA_DIR, { withFileTypes: true })
@@ -381,7 +381,7 @@ function indexPage(url: URL, user: string): string {
   names.forEach((name, i) => {
     const projectDir = DATA_DIR + "/" + name;
     const st = walk(projectDir);
-    totalSize += st.size; totalFiles += st.files;
+    totalSize += st.size;
     let hasIndex = false;
     try { hasIndex = statSync(projectDir + "/index.html").isFile(); } catch { /* нет index.html */ }
     const openSite = domain && hasIndex
@@ -394,7 +394,7 @@ function indexPage(url: URL, user: string): string {
       + `data-kind="${hasIndex ? "site" : "project"}" style="animation-delay:${120 + i * 70}ms">`
       + `<a class="main" href="/browse/${encodeURIComponent(name)}">`
       + `<div class="name">📁 ${esc(name)}</div>`
-      + `<div class="meta">${st.files} файлов · ${humanSize(st.size)} · изменён ${fmtTime(st.latest)}</div>`
+      + `<div class="meta">${humanSize(st.size)} · изменён ${fmtTime(st.latest)}</div>`
       + `</a><div class="card-actions">${openSite}${download}<span class="tag">${humanSize(st.size)}</span></div></div>`,
     );
   });
@@ -409,8 +409,6 @@ function indexPage(url: URL, user: string): string {
   const uptime = `${Math.floor(up / 86400)} дн ${Math.floor((up % 86400) / 3600)} ч`;
   const stats =
     `<div class="stats">`
-    + `<div class="stat rise"><small>Проектов</small><b data-count="${names.length}">0</b></div>`
-    + `<div class="stat rise"><small>Файлов всего</small><b data-count="${totalFiles}">0</b></div>`
     + `<div class="stat rise"><small>Занято проектами</small><b>${humanSize(totalSize)}</b></div>`
     + `<div class="stat rise"><small>Свободно на диске</small><b>${diskFree}</b></div>`
     + `<div class="stat rise"><small>Аптайм сервера</small><b>${uptime}</b></div></div>`;
@@ -427,8 +425,7 @@ function indexPage(url: URL, user: string): string {
     + `<option value="name">По названию</option><option value="modified">По дате изменения</option>`
     + `<option value="size">По размеру</option><option value="files">По числу файлов</option></select>`
     + `<select aria-label="Порядок" data-filter-order>`
-    + `<option value="asc">По возрастанию</option><option value="desc">По убыванию</option></select>`
-    + `<span class="filter-count" data-filter-count>${names.length}</span></div>`;
+    + `<option value="asc">По возрастанию</option><option value="desc">По убыванию</option></select></div>`;
 
   const body = cards.length
     ? `<div data-filter-root>${filters}<div data-filter-list>${cards.join("")}</div>`
@@ -466,21 +463,27 @@ function browsePage(rel: string, user: string): Response {
     const childRel = rel ? rel + "/" + entry.name : entry.name;
     const q = encodeURIComponent(childRel);
     let size = 0, modified = 0;
+    const childPath = target + "/" + entry.name;
     try {
-      const stat = statSync(target + "/" + entry.name);
+      const stat = statSync(childPath);
       size = stat.size;
       modified = stat.mtimeMs;
+      if (entry.isDirectory()) {
+        const nested = walk(childPath);
+        size = nested.size;
+        modified = Math.max(modified, nested.latest);
+      }
     } catch { /* недоступно */ }
     const kind = entry.isDirectory() ? "folder" : "file";
     const nameCell = entry.isDirectory()
       ? `📁 <a href="/browse/${q}">${esc(entry.name)}</a>`
       : `📄 ${esc(entry.name)}`;
     const action = entry.isDirectory()
-      ? `<span class="hint">папка</span>`
+      ? `<a class="btn" href="/download-folder/${q}">Скачать</a>`
       : `<a class="btn" href="/download/${q}">Скачать</a>`;
     return `<tr data-filter-item data-name="${esc(entry.name.toLocaleLowerCase("ru"))}" `
-      + `data-kind="${kind}" data-size="${entry.isDirectory() ? 0 : size}" data-modified="${modified}">`
-      + `<td>${nameCell}</td><td>${entry.isDirectory() ? "—" : humanSize(size)}</td>`
+      + `data-kind="${kind}" data-size="${size}" data-modified="${modified}">`
+      + `<td>${nameCell}</td><td>${humanSize(size)}</td>`
       + `<td>${esc(fmtTime(modified))}</td><td>${entry.isDirectory() ? "Папка" : "Файл"}</td>`
       + `<td>${action}</td></tr>`;
   });
@@ -496,8 +499,7 @@ function browsePage(rel: string, user: string): Response {
     + `<option value="modified">По дате изменения</option><option value="size">По размеру</option>`
     + `<option value="kind">По типу</option></select>`
     + `<select aria-label="Порядок" data-filter-order><option value="asc">По возрастанию</option>`
-    + `<option value="desc">По убыванию</option></select>`
-    + `<span class="filter-count" data-filter-count>${entries.length}</span></div>`;
+    + `<option value="desc">По убыванию</option></select></div>`;
   const table = rows.length ? rows.join("") : "";
 
   return html(shell("NoVate MCP — файлы",
@@ -522,6 +524,25 @@ async function runProcess(args: string[]): Promise<ProcessResult> {
     proc.exited,
   ]);
   return { code, stdout, stderr };
+}
+
+function streamDirectoryArchive(directory: string, downloadName: string): Response {
+  const packed = Bun.spawn([
+    "tar", "-czf", "-", "-C", dirname(directory), "--", basename(directory),
+  ], { stdout: "pipe", stderr: "pipe" });
+  const stderr = new Response(packed.stderr).text();
+  void Promise.all([packed.exited, stderr]).then(([code, message]) => {
+    if (code !== 0) console.error("Потоковая архивация папки завершилась с ошибкой:", message);
+  });
+  return new Response(packed.stdout, {
+    headers: {
+      "Content-Type": "application/gzip",
+      "Content-Disposition":
+        `attachment; filename="${downloadName.replace(/[^\x20-\x7E]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 async function validateBackupArchive(upload: string, encrypted: boolean): Promise<string | null> {
@@ -688,7 +709,7 @@ function generatedSecretToast(secret: GeneratedSecret): string {
     : secret.key === "SESSION_SECRET"
       ? " Текущая сессия завершится после перехода на другую страницу."
       : " Сохраните значение: оно понадобится для расшифровки бэкапов.";
-  return `<div class="toast-stack"><div class="toast toast-success" data-toast data-toast-persistent role="status">`
+  return `<div class="toast-stack"><div class="toast toast-success" data-toast data-toast-duration="15000" style="--toast-duration:15s" role="status">`
     + `<span><b>${esc(secret.key)} создан.</b>${esc(suffix)}`
     + `<code class="generated-secret" data-generated-secret>${esc(secret.value)}</code>`
     + `<button class="btn secret-copy" type="button" data-copy-secret>Копировать</button></span>`
@@ -769,7 +790,7 @@ async function route(req: Request): Promise<Response> {
     if (await f.exists()) {
       return new Response(f, {
         headers: { "Content-Type": "text/javascript; charset=utf-8",
-                   "Cache-Control": "public, max-age=3600" },
+                   "Cache-Control": "no-store" },
       });
     }
     return new Response("// client.js не собран: выполни bun build client.ts --outdir public", {
@@ -882,33 +903,24 @@ async function route(req: Request): Promise<Response> {
     if (!target) return redirect("/");
     try {
       if (!statSync(target).isDirectory()) return redirect("/");
-    } catch {
-      return redirect("/");
-    }
-
-    try {
-      // tar пишет gzip сразу в HTTP-ответ: браузер начинает скачивание без ожидания
-      // создания полного архива и без временного файла на диске.
-      const packed = Bun.spawn(["tar", "-czf", "-", "-C", DATA_DIR, "--", name], {
-        stdout: "pipe", stderr: "pipe",
-      });
-      const stderr = new Response(packed.stderr).text();
-      void Promise.all([packed.exited, stderr]).then(([code, message]) => {
-        if (code !== 0) console.error("Потоковая архивация проекта завершилась с ошибкой:", message);
-      });
-      const downloadName = name + ".tar.gz";
-      return new Response(packed.stdout, {
-        headers: {
-          "Content-Type": "application/gzip",
-          "Content-Disposition":
-            `attachment; filename="${downloadName.replace(/[^\x20-\x7E]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
-          "Cache-Control": "no-store",
-          "X-Content-Type-Options": "nosniff",
-        },
-      });
+      return streamDirectoryArchive(target, name + ".tar.gz");
     } catch (err) {
       console.error("Не удалось начать потоковую архивацию проекта:", err);
       return redirect("/?error=project-archive");
+    }
+  }
+
+  if (method === "GET" && path.startsWith("/download-folder/")) {
+    let rel = "";
+    try { rel = decodeURIComponent(path.slice("/download-folder/".length)); } catch { return redirect("/"); }
+    const target = safePath(rel);
+    if (!target) return redirect("/");
+    try {
+      if (!statSync(target).isDirectory() || target === DATA_DIR) return redirect("/");
+      return streamDirectoryArchive(target, basename(target) + ".tar.gz");
+    } catch (err) {
+      console.error("Не удалось начать потоковую архивацию папки:", err);
+      return redirect("/browse/" + encodeURIComponent(dirname(rel)));
     }
   }
 
