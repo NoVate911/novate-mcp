@@ -757,7 +757,7 @@ function tokenManagementHtml(): string {
     + `<td>${esc(fmtTime(Date.parse(item.createdAt)))}</td><td><form method="post" action="/token-revoke">`
     + `<input type="hidden" name="id" value="${esc(item.id)}"><button class="btn gray" type="submit">Отозвать</button></form></td></tr>`).join("")
     || `<tr><td colspan="4" class="muted">Дополнительных токенов нет</td></tr>`;
-  return `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Ограниченные токены</span>`
+  return `<div class="settings-group token-access-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Ограниченные токены</span>`
     + `<h3>Роли MCP-доступа</h3><p>Reader читает данные, editor также изменяет файлы, operator запускает команды, удаление и бэкапы.</p></div></div>`
     + `<form class="version-form" method="post" action="/token-create"><label>Название</label><input name="name" maxlength="80" required>`
     + `<label>Роль</label><select name="role"><option value="reader">Reader</option><option value="editor">Editor</option><option value="operator">Operator</option></select>`
@@ -790,7 +790,7 @@ function operationsMonitoringHtml(): string {
     || `<tr><td colspan="5" class="muted">Хостовый collector ещё не передал данные. Запустите актуальный install.sh.</td></tr>`;
   const auditRows = auditEvents(100).map((item) => `<tr><td>${esc(fmtTime(Date.parse(item.time)))}</td><td>${esc(item.actor)}</td><td>${esc(item.action)}</td><td>${esc(item.target)}</td><td>${esc(item.result)}</td></tr>`).join("")
     || `<tr><td colspan="5" class="muted">Событий пока нет</td></tr>`;
-  return `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Контейнеры</span><h3>Состояние сервисов</h3></div></div>`
+  return `<div class="settings-group monitoring-operations"><div class="settings-group-head"><div><span class="settings-group-kicker">Контейнеры</span><h3>Состояние сервисов</h3></div></div>`
     + `<div class="panel"><table><thead><tr><th>Сервис</th><th>Состояние</th><th>Healthcheck</th><th>Образ</th><th>Рестарты</th></tr></thead><tbody>${containerRows}</tbody></table></div></div>`
     + `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Аудит</span><h3>Последние действия</h3></div></div>`
     + `<div class="panel"><table><thead><tr><th>Время</th><th>Пользователь</th><th>Действие</th><th>Объект</th><th>Результат</th></tr></thead><tbody>${auditRows}</tbody></table></div></div>`;

@@ -275,6 +275,8 @@ form.inline { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 }
 .backup-guide-error .settings-guide-kicker { color: #ff7b8c; }
 .settings-group + .settings-group { margin-top: 30px; }
+.monitoring-operations, .token-access-group { margin-top: 30px; }
+#settings-versions .settings-group + .settings-group { margin-top: 20px; }
 .settings-group-head { display: flex; justify-content: space-between; gap: 16px; margin: 0 4px 12px; }
 .settings-group-head h3 { margin: 0 0 5px; font-size: 17px; letter-spacing: -.01em; }
 .settings-group-head p { max-width: 760px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
@@ -437,8 +439,10 @@ form.inline input { flex: 1; min-width: 180px; }
 .version-card p { margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .version-form { display: grid; grid-template-columns: minmax(180px, 1fr) auto; gap: 10px; align-items: end; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
 .version-form label { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-weight: 700; }
-.version-form select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text); background: var(--bg); font: inherit; }
-.version-form select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.version-form input, .version-form select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text); background: var(--bg); font: inherit; transition: border-color .2s ease, box-shadow .2s ease, background .2s ease; }
+.version-form input::placeholder { color: var(--muted); opacity: .75; }
+.version-form input:hover, .version-form select:hover { border-color: rgba(139, 148, 160, .5); }
+.version-form input:focus, .version-form select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--surface-2); }
 .version-form .btn { min-height: 44px; }
 .version-form .btn:disabled { opacity: .55; cursor: wait; transform: none; }
 .release-notes { min-height: 120px; max-height: 360px; overflow: auto; padding: 18px; white-space: pre-wrap; user-select: text; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); font-size: 13px; line-height: 1.65; }
