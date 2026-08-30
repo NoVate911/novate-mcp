@@ -294,12 +294,35 @@ async function exchangeCode(code: string, verifier: string): Promise<Record<stri
 }
 
 /** Пути строго внутри DATA_DIR (защита от ../). */
+function firstForwardedHeader(req: Request, name: string): string {
+  return (req.headers.get(name) || "").split(",", 1)[0].trim();
+}
+
+function normalizedOrigin(value: string, defaultProtocol = "https"): string | null {
+  const candidate = value.includes("://") ? value : `${defaultProtocol}://${value}`;
+  try { return new URL(candidate).origin.toLowerCase(); } catch { return null; }
+}
+
 function isSameOriginPost(req: Request): boolean {
-  const origin = req.headers.get("origin");
-  const host = req.headers.get("x-forwarded-host") || req.headers.get("host");
-  const protocol = req.headers.get("x-forwarded-proto") || new URL(req.url).protocol.replace(":", "");
-  if (!origin || !host) return false;
-  return origin === `${protocol}://${host}`;
+  const suppliedOrigin = normalizedOrigin(req.headers.get("origin") || "");
+  if (!suppliedOrigin || suppliedOrigin === "null") return false;
+
+  const requestUrl = new URL(req.url);
+  const forwardedHost = firstForwardedHeader(req, "x-forwarded-host");
+  const forwardedProto = firstForwardedHeader(req, "x-forwarded-proto").replace(/:$/, "").toLowerCase();
+  const requestHost = firstForwardedHeader(req, "host");
+  const requestProto = requestUrl.protocol.replace(":", "").toLowerCase();
+  const configuredDomain = settings.get("DOMAIN").trim();
+  const allowed = new Set<string>();
+
+  const proxyOrigin = forwardedHost && normalizedOrigin(forwardedHost, forwardedProto || requestProto);
+  const directOrigin = requestHost && normalizedOrigin(requestHost, requestProto);
+  const configuredOrigin = configuredDomain && normalizedOrigin(configuredDomain, "https");
+  if (proxyOrigin) allowed.add(proxyOrigin);
+  if (directOrigin) allowed.add(directOrigin);
+  if (configuredOrigin) allowed.add(configuredOrigin);
+
+  return allowed.has(suppliedOrigin);
 }
 
 function safePath(rel: string): string | null {

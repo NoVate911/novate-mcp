@@ -26,11 +26,19 @@
 
 	# Опубликованные проекты защищены той же Telegram OIDC-сессией, что и панель.
 	handle /projects/* {
-		reverse_proxy dashboard:8001
+		reverse_proxy dashboard:8001 {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
 	}
 
 	# Всё остальное (включая главную /) -> защищённая панель управления
 	handle {
-		reverse_proxy dashboard:8001
+		reverse_proxy dashboard:8001 {
+		header_up Host {host}
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
 	}
 }
