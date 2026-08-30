@@ -58,7 +58,7 @@ echo "=== [5/7] Инфра-файлы из GitHub ==="
 mkdir -p "$BASE_DIR"
 cd "$BASE_DIR"
 
-for f in docker-compose.yml Caddyfile .env.example deploy.sh deploy-runner.sh; do
+for f in docker-compose.yml Caddyfile .env.example deploy.sh deploy-runner.sh host-status.sh; do
   if ! curl -fsSL "$REPO_RAW/$f" -o "$f"; then
     echo ""
     echo "!!! ОШИБКА: не удалось скачать $f"
@@ -71,7 +71,7 @@ for f in docker-compose.yml Caddyfile .env.example deploy.sh deploy-runner.sh; d
   echo "  скачан $f"
 done
 
-chmod 755 deploy.sh deploy-runner.sh
+chmod 755 deploy.sh deploy-runner.sh host-status.sh
 mkdir -p "$BASE_DIR/dashboard-data"
 
 # Панель не получает Docker socket и root-доступ. Она пишет строго проверенный
@@ -102,6 +102,31 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --now novate-deploy-request.path
+
+cat > /etc/systemd/system/novate-host-status.service <<EOF
+[Unit]
+Description=NoVate MCP host status collector
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$BASE_DIR
+ExecStart=/usr/bin/bash $BASE_DIR/host-status.sh
+EOF
+cat > /etc/systemd/system/novate-host-status.timer <<EOF
+[Unit]
+Description=Refresh NoVate MCP host status
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+Unit=novate-host-status.service
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable --now novate-host-status.timer
 
 # Миграция со старых версий: sites -> projects
 if [ -d sites ] && [ ! -d projects ]; then

@@ -43,11 +43,32 @@ MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
 DOMAIN = settings.get("DOMAIN")
 PROJECTS_URL = "https://" + DOMAIN + "/projects/" if DOMAIN else ""
 
-# Авторизация: только запросы с заголовком "Authorization: Bearer <MCP_TOKEN>"
-auth = StaticTokenVerifier(
-    tokens={MCP_TOKEN: {"client_id": "mcp-client", "scopes": ["read", "write"]}}
-)
+# Авторизация: основной admin-токен и дополнительные токены с ролями.
+# Файл создаётся панелью с правами 0600; после изменения watcher перезапускает MCP.
+TOKEN_FILE = Path(os.environ.get("CONFIG_DIR", "/config")) / "mcp-tokens.json"
+ROLE_SCOPES = {
+    "reader": ["read"],
+    "editor": ["read", "write"],
+    "operator": ["read", "write", "operate"],
+}
 
+def auth_tokens() -> dict[str, dict]:
+    tokens = {MCP_TOKEN: {"client_id": "primary-admin", "scopes": ["read", "write", "operate"]}}
+    try:
+        payload = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
+        for item in payload.get("tokens", []):
+            token = str(item.get("token", ""))
+            role = str(item.get("role", "reader"))
+            if token and role in ROLE_SCOPES:
+                tokens[token] = {"client_id": str(item.get("id", "managed-token")), "scopes": ROLE_SCOPES[role]}
+    except Exception:
+        pass
+    return tokens
+
+def has_scope(context, scope: str) -> bool:
+    return context.token is not None and scope in context.token.scopes
+
+auth = StaticTokenVerifier(tokens=auth_tokens())
 mcp = FastMCP(name="VPS Tools", auth=auth)
 
 
@@ -132,7 +153,7 @@ if PROJECTS_URL:
     _run_desc += f"Созданные проекты видны в браузере: {PROJECTS_URL}<имя проекта>\n"
 
 
-@mcp.tool(description=_run_desc)
+@mcp.tool(description=_run_desc, auth=lambda context: has_scope(context, "operate"))
 def run_command(command: str, timeout: int = 120) -> str:
     """Args:
         command: Команда для выполнения (например, "mkdir -p landing").
@@ -165,7 +186,7 @@ def run_command(command: str, timeout: int = 120) -> str:
     return output
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "write"))
 def write_file(path: str, content: str) -> str:
     """Создать или перезаписать текстовый файл в папке проектов на сервере.
 
@@ -185,7 +206,7 @@ def write_file(path: str, content: str) -> str:
     return f"Записано {len(content)} символов в {target}"
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "read"))
 def read_file(path: str) -> str:
     """Прочитать текстовый файл из папки проектов на сервере.
 
@@ -206,7 +227,7 @@ def read_file(path: str) -> str:
     return text
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "read"))
 def list_files(path: str = ".") -> str:
     """Показать список проектов и файлов на сервере.
 
@@ -226,7 +247,7 @@ def list_files(path: str = ".") -> str:
     return "\n".join(lines) if lines else "(пусто)"
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "read"))
 def search_in_files(query: str, path: str = ".", max_results: int = 50) -> str:
     """Искать текст в содержимом файлов проектов (как grep, без регулярных выражений).
 
@@ -261,7 +282,7 @@ def search_in_files(query: str, path: str = ".", max_results: int = 50) -> str:
     return "\n".join(hits) if hits else "Совпадений нет"
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "operate"))
 def delete_file(path: str) -> str:
     """Удалить файл или папку в папке проектов на сервере.
 
@@ -290,7 +311,7 @@ def delete_file(path: str) -> str:
     return f"Удалена папка с содержимым: {path}" if is_directory else f"Удалён файл: {path}"
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "write"))
 def move_file(src: str, dst: str) -> str:
     """Переместить или переименовать файл/папку в папке проектов.
 
@@ -333,7 +354,7 @@ def _human(n: float) -> str:
     return f"{size:.1f} ПБ"
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "read"))
 def server_stats() -> str:
     """Показать состояние сервера: нагрузка, память, диск, аптайм, проекты.
     Возвращает сводку по хосту (вид из контейнера)."""
@@ -411,7 +432,7 @@ def _finish_background(task_id: str, proc: subprocess.Popen, before: Snapshot, l
             stream.write("\n" + message + "\n")
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "operate"))
 def run_background(command: str) -> str:
     """Запустить shell-команду в фоне в папке проектов (для долгих задач:
     сборки, деплои, генерации), не блокируя ответ.
@@ -442,7 +463,7 @@ def run_background(command: str) -> str:
     )
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "operate"))
 def poll_task(task_id: str, tail: int = 40) -> str:
     """Проверить статус и лог фоновой задачи, запущенной run_background.
 
@@ -477,7 +498,7 @@ def poll_task(task_id: str, tail: int = 40) -> str:
 BACKUP_TRIGGER = DATA_DIR / ".backup-now"
 
 
-@mcp.tool
+@mcp.tool(auth=lambda context: has_scope(context, "operate"))
 def make_backup() -> str:
     """Запустить бэкап проектов вне расписания (как кнопка в панели).
 
@@ -515,12 +536,14 @@ def watch_external_sync() -> None:
 
 
 def watch_mcp_token() -> None:
-    """Перезапускает MCP-процесс, когда панель сгенерировала новый токен."""
+    """Перезапускает MCP при смене основного или управляемых токенов."""
+    initial_mtime = TOKEN_FILE.stat().st_mtime_ns if TOKEN_FILE.exists() else 0
     while True:
         time.sleep(2)
         token = settings.get("MCP_TOKEN")
-        if token and token != MCP_TOKEN:
-            print("MCP_TOKEN изменён — перезапуск MCP-процесса", flush=True)
+        current_mtime = TOKEN_FILE.stat().st_mtime_ns if TOKEN_FILE.exists() else 0
+        if (token and token != MCP_TOKEN) or current_mtime != initial_mtime:
+            print("Токены MCP изменены — перезапуск MCP-процесса", flush=True)
             os.execv(sys.executable, [sys.executable, *sys.argv])
 
 

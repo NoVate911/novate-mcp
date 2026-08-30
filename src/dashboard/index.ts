@@ -37,6 +37,7 @@ import * as settings from "./settings.ts";
 import { createSessionCodec } from "./session.ts";
 import { monitoringHistory, monitoringSnapshot, startMonitoring } from "./monitor.ts";
 import { loadVersionsInfo, versionCanBeDeployed } from "./versions.ts";
+import { appendAudit, auditEvents, createManagedToken, deployHistory, hostStatus, managedTokens, preflightStatus, readJson, revokeManagedToken } from "./admin.ts";
 import { esc, fmtTime, header, humanSize, loginPage, mask, shell, toast } from "./ui.ts";
 
 const DATA_DIR = resolve(process.env.MCP_DATA_DIR || "/data");
@@ -621,7 +622,11 @@ function backupStatus(): BackupStatus | null {
 
 function backupsPage(url: URL, user: string): string {
   let flash = "";
-  if (url.searchParams.has("started")) {
+  if (url.searchParams.has("verified")) {
+    flash = toast("Целостность бэкапа проверена: архив безопасно читается и распаковывается.", "success");
+  } else if (url.searchParams.has("verify-error")) {
+    flash = toast("Проверка целостности бэкапа завершилась ошибкой.", "error");
+  } else if (url.searchParams.has("started")) {
     flash = toast("Бэкап запущен — архив появится в списке и Telegram в течение минуты.", "success");
   } else if (url.searchParams.has("restore")) {
     flash = toast("Восстановление запущено. Перед ним создаётся страховочный бэкап.", "success");
@@ -690,6 +695,9 @@ function backupsPage(url: URL, user: string): string {
       + `<span>Готовый архив можно отправлять в Telegram</span></div></div></section>`;
   }
 
+  const projectOptions = readdirSync(DATA_DIR, { withFileTypes: true }).filter((item) => item.isDirectory())
+    .map((item) => `<option value="${esc(item.name)}">${esc(item.name)}</option>`).join("");
+  const verifications = readJson(`${CONFIG_DIR}/backup-verifications.json`);
   let rows = "";
   try {
     rows = readdirSync(BACKUP_DIR)
@@ -704,9 +712,10 @@ function backupsPage(url: URL, user: string): string {
       })
       .sort((a, b) => b.mtime - a.mtime)
       .map((f) =>
-        `<tr><td>🗄 ${esc(f.name)}</td><td>${humanSize(f.size)}</td><td>${esc(fmtTime(f.mtime))}</td>`
+        `<tr><td>🗄 ${esc(f.name)}<br><span class="muted">${(verifications[f.name] as Record<string, unknown> | undefined)?.state === "ok" ? "Целостность проверена" : "Не проверен вручную"}</span></td><td>${humanSize(f.size)}</td><td>${esc(fmtTime(f.mtime))}</td>`
         + `<td><a class="btn" href="/backup-file/${encodeURIComponent(f.name)}">Скачать</a> `
-        + `<a class="btn gray" href="/backups?confirm=${encodeURIComponent(f.name)}">Восстановить</a></td></tr>`,
+        + `<form class="inline-form" method="post" action="/backup-verify"><input type="hidden" name="file" value="${esc(f.name)}"><button class="btn gray" type="submit">Проверить</button></form>`
+        + `<form class="inline-form" method="post" action="/restore"><input type="hidden" name="file" value="${esc(f.name)}"><select name="project"><option value="">Все проекты</option>${projectOptions}</select><button class="btn gray" type="submit">Восстановить</button></form></td></tr>`,
       )
       .join("");
     if (!rows) rows = `<tr><td colspan="4" style="text-align:center;color:var(--muted)">архивов пока нет</td></tr>`;
@@ -731,7 +740,7 @@ function backupsPage(url: URL, user: string): string {
 type GeneratedSecret = { key: string; value: string };
 
 function generatedSecretToast(secret: GeneratedSecret): string {
-  const suffix = secret.key === "MCP_TOKEN"
+  const suffix = secret.key.startsWith("MCP_TOKEN")
     ? " MCP-сервис автоматически применит его в течение нескольких секунд."
     : secret.key === "SESSION_SECRET"
       ? " Текущая сессия завершится после перехода на другую страницу."
@@ -741,6 +750,50 @@ function generatedSecretToast(secret: GeneratedSecret): string {
     + `<code class="generated-secret" data-generated-secret>${esc(secret.value)}</code>`
     + `<button class="btn secret-copy" type="button" data-copy-secret>Копировать</button></span>`
     + `<button class="toast-close" type="button" aria-label="Закрыть">×</button></div></div>`;
+}
+
+function tokenManagementHtml(): string {
+  const rows = managedTokens().map((item) => `<tr><td><b>${esc(item.name)}</b></td><td>${esc(item.role)}</td>`
+    + `<td>${esc(fmtTime(Date.parse(item.createdAt)))}</td><td><form method="post" action="/token-revoke">`
+    + `<input type="hidden" name="id" value="${esc(item.id)}"><button class="btn gray" type="submit">Отозвать</button></form></td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">Дополнительных токенов нет</td></tr>`;
+  return `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Ограниченные токены</span>`
+    + `<h3>Роли MCP-доступа</h3><p>Reader читает данные, editor также изменяет файлы, operator запускает команды, удаление и бэкапы.</p></div></div>`
+    + `<form class="version-form" method="post" action="/token-create"><label>Название</label><input name="name" maxlength="80" required>`
+    + `<label>Роль</label><select name="role"><option value="reader">Reader</option><option value="editor">Editor</option><option value="operator">Operator</option></select>`
+    + `<button class="btn" type="submit">Создать токен</button></form><div class="panel"><table><thead><tr><th>Название</th><th>Роль</th><th>Создан</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+function deployOperationsHtml(): string {
+  const host = hostStatus();
+  const runner = host.runner && typeof host.runner === "object" ? host.runner as Record<string, unknown> : {};
+  const runnerOk = runner.active === "active" && runner.enabled === "enabled";
+  const preflight = preflightStatus();
+  const history = deployHistory().map((item) => `<tr><td>${esc(String(item.version || "—"))}</td><td>${esc(String(item.state || "—"))}</td>`
+    + `<td>${esc(fmtTime(Date.parse(String(item.finishedAt || item.requestedAt || ""))))}</td><td>${item.log ? `<a href="/deploy-log/${encodeURIComponent(String(item.log))}">Открыть лог</a>` : "—"}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">Обновлений пока не было</td></tr>`;
+  return `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Диагностика</span><h3>Хостовый runner</h3>`
+    + `<p>${runnerOk ? "Runner установлен, включён и готов принимать запросы." : "Runner не подтверждён. Запустите актуальный install.sh и проверьте systemd-unit."}</p></div></div>`
+    + `<div class="version-deploy-status ${runnerOk ? "success" : "error"}"><i></i><div><b>${runnerOk ? "Runner готов" : "Runner недоступен"}</b><p>Статус обновлён ${esc(fmtTime(Date.parse(String(host.updatedAt || ""))))}</p></div></div>`
+    + `<form class="version-form" method="post" action="/version-preflight"><label>Версия для проверки</label><input name="version" placeholder="26.8.1.786" required>`
+    + `<button class="btn gray" type="submit">Проверить релиз</button></form>`
+    + (preflight.state ? `<p class="muted"><b>${esc(String(preflight.version || ""))}:</b> ${esc(String(preflight.message || preflight.state))}</p>` : "")
+    + `</div><div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">История deploy</span><h3>Последние операции</h3></div></div>`
+    + `<div class="panel"><table><thead><tr><th>Версия</th><th>Результат</th><th>Время</th><th>Журнал</th></tr></thead><tbody>${history}</tbody></table></div></div>`;
+}
+
+function operationsMonitoringHtml(): string {
+  const host = hostStatus();
+  const containers = Array.isArray(host.containers) ? host.containers as Array<Record<string, unknown>> : [];
+  const containerRows = containers.map((item) => `<tr><td><b>${esc(String(item.name || "—"))}</b></td><td>${esc(String(item.state || "unknown"))}</td>`
+    + `<td>${esc(String(item.health || "—"))}</td><td>${esc(String(item.image || "—"))}</td><td>${esc(String(item.restarts || 0))}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted">Хостовый collector ещё не передал данные. Запустите актуальный install.sh.</td></tr>`;
+  const auditRows = auditEvents(100).map((item) => `<tr><td>${esc(fmtTime(Date.parse(item.time)))}</td><td>${esc(item.actor)}</td><td>${esc(item.action)}</td><td>${esc(item.target)}</td><td>${esc(item.result)}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted">Событий пока нет</td></tr>`;
+  return `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Контейнеры</span><h3>Состояние сервисов</h3></div></div>`
+    + `<div class="panel"><table><thead><tr><th>Сервис</th><th>Состояние</th><th>Healthcheck</th><th>Образ</th><th>Рестарты</th></tr></thead><tbody>${containerRows}</tbody></table></div></div>`
+    + `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Аудит</span><h3>Последние действия</h3></div></div>`
+    + `<div class="panel"><table><thead><tr><th>Время</th><th>Пользователь</th><th>Действие</th><th>Объект</th><th>Результат</th></tr></thead><tbody>${auditRows}</tbody></table></div></div>`;
 }
 
 function monitoringPage(user: string): string {
@@ -765,7 +818,8 @@ function monitoringPage(user: string): string {
     + `<div class="settings-guide-copy"><span class="settings-guide-kicker">Мониторинг</span><h1>${esc(state)}</h1>`
     + `<p>Панель контролирует S3, heartbeat бэкапов, restore drill и свободное место. Новые ошибки и восстановления отправляются в Telegram.</p></div></section>`
     + `<div class="monitor-grid rise">${cards}</div><div class="monitor-problems rise">${problems}</div>`
-    + `<div class="panel rise"><table><thead><tr><th>Время</th><th>Состояние</th><th>Событие</th></tr></thead><tbody>${events}</tbody></table></div></div>`);
+    + `<div class="panel rise"><table><thead><tr><th>Время</th><th>Состояние</th><th>Событие</th></tr></thead><tbody>${events}</tbody></table></div>`
+    + operationsMonitoringHtml() + `</div>`);
 }
 
 function settingsPage(url: URL, user: string, generated?: GeneratedSecret): string {
@@ -779,7 +833,19 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   } else if (!generated && url.searchParams.has("version-requested")) {
     flash = toast("Обновление принято. Хостовый deploy-runner выполнит проверяемый deploy с rollback.", "success");
   } else if (!generated && url.searchParams.has("version-error")) {
-    flash = toast("Не удалось принять обновление. Проверьте статус и повторите попытку.", "error");
+    const reason = url.searchParams.get("version-error") || "request";
+    const messages: Record<string, string> = {
+      origin: "Запрос отклонён: источник страницы не совпал с доменом панели.",
+      version: "Релиз не найден среди опубликованных GitHub Releases.",
+      runner: "Хостовый deploy-runner не работает. Запустите актуальный install.sh и проверьте systemd.",
+      preflight: "Сначала выполните предварительную проверку выбранной версии.",
+      busy: "Другой запрос на обновление уже ожидает обработки runner.",
+      permission: "Панель не может записать deploy-запрос: проверьте права dashboard-data.",
+      request: "Не удалось создать запрос на обновление. Проверьте диагностику runner.",
+    };
+    flash = toast(messages[reason] || messages.request, "error");
+  } else if (!generated && url.searchParams.has("preflight-requested")) {
+    flash = toast("Предварительная проверка поставлена в очередь. Результат появится в течение 30 секунд.", "success");
   }
 
   const rows: Record<SettingSection, string[]> = {
@@ -979,7 +1045,8 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `<div class="settings-group"><div class="settings-group-head"><div>`
     + `<span class="settings-group-kicker">Статус обновления</span><h3>Последняя операция</h3></div></div>`
     + `<div class="version-deploy-status ${esc(deployState)}"><i></i><div><b>${esc(deployMessage)}</b>`
-    + `<p>${deployVersion ? `Версия ${esc(deployVersion)} · ` : ""}${esc(deployUpdated)}</p></div></div></div></div>`;
+    + `<p>${deployVersion ? `Версия ${esc(deployVersion)} · ` : ""}${esc(deployUpdated)}</p></div></div></div>`
+    + deployOperationsHtml() + `</div>`;
 
   const panels = SETTING_SECTIONS.map((section) =>
     `<section class="settings-panel" id="settings-${section.id}" role="tabpanel" `
@@ -989,6 +1056,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
         + `<p>${esc(section.description)}</p></div>`)
     + (section.id === "storage" ? storageContent
       : section.id === "versions" ? versionContent
+      : section.id === "access" ? `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>${tokenManagementHtml()}`
       : `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>`)
     + `</section>`,
   ).join("");
@@ -1192,6 +1260,7 @@ async function route(req: Request): Promise<Response> {
       const info = lstatSync(target);
       if (!info.isDirectory() || info.isSymbolicLink()) return redirect("/?error=project-delete");
       rmSync(target, { recursive: true, force: false });
+      appendAudit(session.name, "project.delete", name);
       // Immediate reconcile removes the same project from S3; disabled S3 safely ignores it.
       writeFileSync(`${CONFIG_DIR}/s3-action.json`, JSON.stringify({
         action: "sync", requested_at: new Date().toISOString(), requested_by: session.uid,
@@ -1264,6 +1333,7 @@ async function route(req: Request): Promise<Response> {
     // Файл-триггер для сервиса бэкапов (он следит за /config/backup-now)
     try {
       writeFileSync(`${CONFIG_DIR}/backup-now`, String(Date.now()), "utf8");
+      appendAudit(session.name, "backup.create", "manual");
     } catch (err) {
       console.error("Не удалось создать триггер бэкапа:", err);
     }
@@ -1307,6 +1377,7 @@ async function route(req: Request): Promise<Response> {
         }
       } catch { /* имя свободно */ }
       copyFileSync(upload, target);
+      appendAudit(session.name, "backup.upload", name);
       tgNotify(`📥 <b>Бэкап загружен</b>
 
 `
@@ -1324,14 +1395,36 @@ async function route(req: Request): Promise<Response> {
     }
   }
 
+  if (method === "POST" && path === "/backup-verify") {
+    const form = await req.formData();
+    const file = String(form.get("file") || "");
+    if (!BACKUP_NAME_RE.test(file)) return redirect("/backups?verify-error=invalid");
+    const target = resolve(BACKUP_DIR, file);
+    try {
+      if (!target.startsWith(BACKUP_DIR + "/") || !statSync(target).isFile()) throw new Error("Архив не найден");
+      const error = await validateBackupArchive(target, file.endsWith(".enc"));
+      const registry = readJson(`${CONFIG_DIR}/backup-verifications.json`);
+      registry[file] = { state: error ? "error" : "ok", checkedAt: new Date().toISOString(), error: error || "" };
+      writeFileSync(`${CONFIG_DIR}/backup-verifications.json`, JSON.stringify(registry, null, 2), { encoding: "utf8", mode: 0o600 });
+      appendAudit(session.name, "backup.verify", file, error ? "error" : "ok", error || "");
+      return redirect(`/backups?${error ? "verify-error=" + encodeURIComponent(error) : "verified=1"}`);
+    } catch (error) {
+      appendAudit(session.name, "backup.verify", file, "error", String(error));
+      return redirect("/backups?verify-error=failed");
+    }
+  }
+
   if (method === "POST" && path === "/restore") {
     // Запрос на восстановление: файл-триггер с ИМЕНЕМ архива для сервиса backup
     const form = await req.formData();
     const file = String(form.get("file") || "");
+    const project = String(form.get("project") || "").trim();
     if (!/^[\w.-]+\.tar\.gz(\.enc)?$/.test(file)) return redirect("/backups");
+    if (project && (!/^[A-Za-z0-9_.-]{1,120}$/.test(project) || project === "." || project === "..")) return redirect("/backups");
     try {
       if (!statSync(resolve(BACKUP_DIR, file)).isFile()) return redirect("/backups");
-      writeFileSync(`${CONFIG_DIR}/restore-now`, file, "utf8");
+      writeFileSync(`${CONFIG_DIR}/restore-now`, JSON.stringify({ file, project, requested_at: new Date().toISOString(), requested_by: session.uid }), "utf8");
+      appendAudit(session.name, "backup.restore", project ? `${file}/${project}` : file);
       tgNotify(`♻️ <b>Запущено восстановление</b>
 
 `
@@ -1375,7 +1468,40 @@ async function route(req: Request): Promise<Response> {
     writeFileSync(`${CONFIG_DIR}/s3-action.json`, JSON.stringify({
       action, requested_at: new Date().toISOString(), requested_by: session.uid,
     }), { encoding: "utf8", mode: 0o600 });
+    appendAudit(session.name, `s3.${action}`, "storage");
     return redirect("/settings?tab=storage&s3-action=1");
+  }
+
+  if (method === "POST" && path === "/token-create") {
+    const form = await req.formData();
+    const name = String(form.get("name") || "").trim();
+    const role = String(form.get("role") || "reader");
+    if (!name || !["reader", "editor", "operator"].includes(role)) return redirect("/settings?tab=access");
+    const token = createManagedToken(name, role as "reader" | "editor" | "operator", session.name);
+    return html(settingsPage(new URL("/settings?tab=access", url), session.name, { key: `MCP_TOKEN_${role}`, value: token.token }));
+  }
+
+  if (method === "POST" && path === "/token-revoke") {
+    const form = await req.formData();
+    revokeManagedToken(String(form.get("id") || ""), session.name);
+    return redirect("/settings?tab=access");
+  }
+
+  if (method === "POST" && path === "/version-preflight") {
+    const form = await req.formData();
+    const version = String(form.get("version") || "").trim();
+    if (!await versionCanBeDeployed(version)) return redirect("/settings?tab=versions&version-error=version");
+    writeFileSync(`${CONFIG_DIR}/preflight-request.json`, JSON.stringify({ version, requested_at: new Date().toISOString(), requested_by: session.uid }), { encoding: "utf8", mode: 0o600 });
+    appendAudit(session.name, "deploy.preflight", version);
+    return redirect("/settings?tab=versions&preflight-requested=1");
+  }
+
+  if (method === "GET" && path.startsWith("/deploy-log/")) {
+    const name = basename(decodeURIComponent(path.slice("/deploy-log/".length)));
+    if (!/^panel-deploy-[0-9a-z-]+\\.log$/.test(name)) return new Response("Not found", { status: 404 });
+    const target = `${CONFIG_DIR}/deploy-logs/${name}`;
+    try { if (!statSync(target).isFile()) throw new Error("missing"); } catch { return new Response("Not found", { status: 404 }); }
+    return new Response(readFileSync(target, "utf8"), { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
   }
 
   if (method === "POST" && path === "/version-update") {
@@ -1383,12 +1509,16 @@ async function route(req: Request): Promise<Response> {
     const form = await req.formData();
     const version = String(form.get("version") || "").trim();
     try {
-      if (!await versionCanBeDeployed(version)) {
-        return redirect("/settings?tab=versions&version-error=version");
-      }
+      if (!await versionCanBeDeployed(version)) return redirect("/settings?tab=versions&version-error=version");
+      const host = hostStatus();
+      const runner = host.runner && typeof host.runner === "object" ? host.runner as Record<string, unknown> : {};
+      if (runner.active !== "active" || runner.enabled !== "enabled") return redirect("/settings?tab=versions&version-error=runner");
+      const preflight = preflightStatus();
+      if (preflight.version !== version || preflight.state !== "ok") return redirect("/settings?tab=versions&version-error=preflight");
       writeFileSync(`${CONFIG_DIR}/deploy-request.json`, JSON.stringify({
         version, requested_at: new Date().toISOString(), requested_by: session.uid,
       }), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      appendAudit(session.name, "deploy.request", version);
       tgNotify(`🚀 <b>Запрошено обновление NoVate MCP</b>
 
 `
@@ -1398,7 +1528,9 @@ async function route(req: Request): Promise<Response> {
       return redirect("/settings?tab=versions&version-requested=1");
     } catch (err) {
       console.error("Не удалось создать deploy-запрос:", err);
-      return redirect("/settings?tab=versions&version-error=request");
+      const code = err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code || "") : "";
+      appendAudit(session.name, "deploy.request", version, "error", code || String(err));
+      return redirect(`/settings?tab=versions&version-error=${code === "EEXIST" ? "busy" : code === "EACCES" ? "permission" : "request"}`);
     }
   }
 
@@ -1413,6 +1545,7 @@ async function route(req: Request): Promise<Response> {
     if (!item) return redirect("/settings");
     if (action === "reset") {
       settings.clearOverride(key);
+      appendAudit(session.name, "settings.reset", key);
       tgNotify(`⚙️ <b>Настройка сброшена</b>
 
 `
@@ -1426,6 +1559,7 @@ async function route(req: Request): Promise<Response> {
     if (action === "generate" && item.mode === "generated-secret") {
       const value = randomBytes(32).toString("hex");
       settings.setOverride(key, value);
+      appendAudit(session.name, "settings.generate", key);
       tgNotify(`🔑 <b>Создан новый секрет</b>
 
 `
@@ -1442,6 +1576,7 @@ async function route(req: Request): Promise<Response> {
       const value = String(form.get("value") || "").trim();
       if (item.mode === "text" || value) {
         settings.setOverride(key, value);
+        appendAudit(session.name, "settings.update", key);
         tgNotify(`⚙️ <b>Настройка изменена</b>
 
 `

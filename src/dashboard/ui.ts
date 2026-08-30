@@ -469,6 +469,10 @@ form.inline input { flex: 1; min-width: 180px; }
   .card-actions { justify-content: flex-start; }
 }
 
+.inline-form { display: inline-flex; align-items: center; gap: 6px; margin: 4px; }
+.inline-form select { max-width: 170px; }
+.settings-group + .settings-group { margin-top: 24px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;

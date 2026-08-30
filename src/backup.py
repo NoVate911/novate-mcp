@@ -392,7 +392,7 @@ def run_backup(reason: str) -> None:
         })
 
 
-def do_restore(name: str) -> None:
+def do_restore(name: str, project: str = "") -> None:
     """Восстановить проекты из архива (кнопка «Восстановить» в панели).
 
     Перед перезаписью проектов автоматически делается страховочный бэкап.
@@ -400,10 +400,12 @@ def do_restore(name: str) -> None:
     """
     if not ARCHIVE_RE.match(name):
         raise ValueError(f"недопустимое имя архива: {name!r}")
+    if project and (not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", project) or project in {".", ".."}):
+        raise ValueError(f"недопустимое имя проекта: {project!r}")
     src = BACKUP_DIR / name
     if not src.is_file():
         raise FileNotFoundError(name)
-    log(f"восстановление из {name}")
+    log(f"восстановление из {name}" + (f" проекта {project}" if project else ""))
     snapshot, _ = maybe_encrypt(make_archive(tag="-pre-restore"))
     log(f"страховочный бэкап перед восстановлением: {snapshot.name}")
     prune()
@@ -427,6 +429,8 @@ def do_restore(name: str) -> None:
                 rel = member.name[len("projects/"):]
                 if not rel:
                     continue
+                if project and rel != project and not rel.startswith(project + "/"):
+                    continue
                 member.name = rel
                 tar.extract(member, DATA_DIR, filter="data")
                 restored += 1
@@ -436,12 +440,13 @@ def do_restore(name: str) -> None:
         tg_text(
             "✅ <b>Восстановление завершено</b>\n\n"
             f"<b>Архив:</b> <code>{html.escape(name)}</code>\n"
-            f"<b>Восстановлено объектов:</b> {restored}\n"
+            + (f"<b>Проект:</b> <code>{html.escape(project)}</code>\n" if project else "")
+            + f"<b>Восстановлено объектов:</b> {restored}\n"
             f"<b>Страховочная копия:</b> <code>{html.escape(snapshot.name)}</code>"
         )
         write_status({
             "time": datetime.now(timezone.utc).isoformat(),
-            "restore": f"ok: {name} (объектов: {restored})",
+            "restore": f"ok: {name}" + (f" / {project}" if project else "") + f" (объектов: {restored})",
             "file": snapshot.name, "size": snapshot.stat().st_size,
             "reason": "страховочный перед восстановлением",
         })
@@ -535,10 +540,16 @@ def restore_request():
     except OSError:
         return None
     try:
-        name = RESTORE_FILE.read_text(encoding="utf-8").strip()
+        raw = RESTORE_FILE.read_text(encoding="utf-8").strip()
+        try:
+            payload = json.loads(raw)
+            name = str(payload.get("file", ""))
+            project = str(payload.get("project", ""))
+        except (json.JSONDecodeError, AttributeError):
+            name, project = raw, ""
     except OSError:
-        name = ""
-    return (name, st.st_mtime)
+        name, project = "", ""
+    return (name, project, st.st_mtime)
 
 
 def main() -> None:
@@ -561,7 +572,7 @@ def main() -> None:
                 last_restore = req
                 if req[0]:
                     try:
-                        do_restore(req[0])
+                        do_restore(req[0], req[1])
                     except Exception as e:
                         log(f"ОШИБКА восстановления: {e}")
                         tg_text(
