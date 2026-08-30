@@ -715,7 +715,7 @@ function backupsPage(url: URL, user: string): string {
         `<tr><td>🗄 ${esc(f.name)}<br><span class="muted">${(verifications[f.name] as Record<string, unknown> | undefined)?.state === "ok" ? "Целостность проверена" : "Не проверен вручную"}</span></td><td>${humanSize(f.size)}</td><td>${esc(fmtTime(f.mtime))}</td>`
         + `<td><a class="btn" href="/backup-file/${encodeURIComponent(f.name)}">Скачать</a> `
         + `<form class="inline-form" method="post" action="/backup-verify"><input type="hidden" name="file" value="${esc(f.name)}"><button class="btn gray" type="submit">Проверить</button></form>`
-        + `<form class="inline-form" method="post" action="/restore"><input type="hidden" name="file" value="${esc(f.name)}"><select name="project"><option value="">Все проекты</option>${projectOptions}</select><button class="btn gray" type="submit">Восстановить</button></form></td></tr>`,
+        + `<form class="inline-form" method="post" action="/restore"><input type="hidden" name="file" value="${esc(f.name)}"><select class="restore-project-select" name="project" aria-label="Проект для восстановления"><option value="">Все проекты</option>${projectOptions}</select><button class="btn gray" type="submit">Восстановить</button></form></td></tr>`,
       )
       .join("");
     if (!rows) rows = `<tr><td colspan="4" style="text-align:center;color:var(--muted)">архивов пока нет</td></tr>`;

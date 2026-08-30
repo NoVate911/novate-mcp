@@ -475,6 +475,14 @@ form.inline input { flex: 1; min-width: 180px; }
 
 .inline-form { display: inline-flex; align-items: center; gap: 6px; margin: 4px; }
 .inline-form select { max-width: 170px; }
+.restore-project-select {
+  min-height: 40px; padding: 8px 34px 8px 11px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 10px; cursor: pointer;
+  transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+}
+.restore-project-select:hover { border-color: rgba(139, 148, 160, .5); }
+.restore-project-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--surface-2); }
+.token-access-group .version-form + .panel { margin-top: 16px; }
 .settings-group + .settings-group { margin-top: 24px; }
 
 @media (prefers-reduced-motion: reduce) {
