@@ -207,23 +207,9 @@ const versionsRoot = document.querySelector<HTMLElement>("[data-versions-root]")
 if (versionsRoot) {
   const latest = versionsRoot.querySelector<HTMLElement>("[data-version-latest]");
   const message = versionsRoot.querySelector<HTMLElement>("[data-version-message]");
-  const title = versionsRoot.querySelector<HTMLElement>("[data-release-title]");
-  const meta = versionsRoot.querySelector<HTMLElement>("[data-release-meta]");
-  const notes = versionsRoot.querySelector<HTMLElement>("[data-release-notes]");
-  const link = versionsRoot.querySelector<HTMLAnchorElement>("[data-release-link]");
   const select = versionsRoot.querySelector<HTMLSelectElement>("[data-version-select]");
   const submit = versionsRoot.querySelector<HTMLButtonElement>("[data-version-submit]");
   const form = versionsRoot.querySelector<HTMLFormElement>("[data-version-form]");
-
-  const showRelease = (release: ReleaseInfo): void => {
-    if (title) title.textContent = `${release.name} · ${release.version}`;
-    if (meta) {
-      const date = release.publishedAt ? new Date(release.publishedAt).toLocaleString("ru-RU") : "дата не указана";
-      meta.textContent = `Опубликован ${date}`;
-    }
-    if (notes) notes.textContent = release.notes;
-    if (link && release.url) link.href = release.url;
-  };
 
   void fetch("/api/versions", { cache: "no-store" }).then(async (response) => {
     if (!response.ok) throw new Error("release request failed");
@@ -233,8 +219,10 @@ if (versionsRoot) {
     if (latest) latest.textContent = info.latest.version;
     if (message) {
       message.textContent = info.trackingLatest
-        ? "Используется канал latest. Можно закрепить любой опубликованный релиз."
-        : info.updateAvailable ? "Доступно обновление." : "Установлена актуальная опубликованная версия.";
+        ? "Сверяет канал latest с GitHub Releases и позволяет закрепить опубликованный релиз."
+        : info.updateAvailable
+          ? "Сверяет текущую установку с GitHub Releases: доступно обновление."
+          : "Сверяет текущую установку с GitHub Releases: установлена актуальная версия.";
     }
     if (select) {
       select.replaceChildren(...info.releases.map((release) => {
@@ -247,17 +235,11 @@ if (versionsRoot) {
         : info.releases.some((release) => release.version === info.installed) ? info.installed
         : info.latest.version;
       select.disabled = false;
-      select.addEventListener("change", () => {
-        const release = info.releases.find((item) => item.version === select.value);
-        if (release) showRelease(release);
-      });
     }
     if (submit) submit.disabled = false;
-    showRelease(info.latest);
   }).catch(() => {
     if (latest) latest.textContent = "Проверка недоступна";
-    if (message) message.textContent = "Не удалось получить GitHub Releases. Повторите позже.";
-    if (notes) notes.textContent = "Описание релиза временно недоступно.";
+    if (message) message.textContent = "Не удалось сверить версии с GitHub Releases. Повторите позже.";
   });
 
   form?.addEventListener("submit", (event) => {

@@ -963,10 +963,10 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
   const deployUpdated = statusTime(deployStatus.updated_at);
   const versionContent = `<div class="version-shell" data-versions-root data-installed="${esc(installed)}">`
     + `<div class="version-grid">`
-    + `<article class="version-card"><span>Установленная версия</span><b>${esc(installed)}</b>`
-    + `<p>${installed === "latest" ? "Канал latest: при следующем deploy будет выбран свежий образ main." : "Версия закреплена на конкретном релизе."}</p></article>`
-    + `<article class="version-card" data-version-summary><span>Проверка обновлений</span>`
-    + `<b data-version-latest>Проверяем GitHub Releases…</b><p data-version-message>Получаем список опубликованных версий.</p></article>`
+    + `<article class="version-card"><span>Текущая версия</span><b>${esc(installed)}</b>`
+    + `<p>${installed === "latest" ? "Показывает канал обновлений: при следующем развёртывании будет выбран свежий образ из main." : "Показывает релиз NoVate MCP, который сейчас запущен на сервере."}</p></article>`
+    + `<article class="version-card" data-version-summary><span>Последняя доступная версия</span>`
+    + `<b data-version-latest>Проверяем GitHub Releases…</b><p data-version-message>Сверяем текущую установку с опубликованными релизами.</p></article>`
     + `</div>`
     + `<div class="settings-group"><div class="settings-group-head"><div>`
     + `<span class="settings-group-kicker">Обновление</span><h3>Выберите опубликованный релиз</h3>`
@@ -974,21 +974,17 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `</div></div><form class="version-form" method="post" action="/version-update" data-version-form>`
     + `<label for="version-select">Версия</label><select id="version-select" name="version" data-version-select disabled>`
     + `<option>Загрузка списка релизов…</option></select>`
-    + `<button class="btn" type="submit" data-version-submit disabled>Установить версию</button></form></div>`
+    + `<button class="btn" type="submit" data-version-submit disabled>Установить версию</button></form>`
+    + `<a class="release-link" href="https://github.com/NoVate911/novate-mcp/releases" target="_blank" rel="noreferrer">Открыть релизы на GitHub ↗</a></div>`
     + `<div class="settings-group"><div class="settings-group-head"><div>`
-    + `<span class="settings-group-kicker">Последний релиз</span><h3 data-release-title>Описание появится после проверки</h3>`
-    + `<p data-release-meta>GitHub Releases</p></div></div>`
-    + `<div class="release-notes" data-release-notes>Загрузка changelog…</div>`
-    + `<a class="release-link" data-release-link href="https://github.com/NoVate911/novate-mcp/releases" target="_blank" rel="noreferrer">Открыть релизы на GitHub ↗</a></div>`
-    + `<div class="settings-group"><div class="settings-group-head"><div>`
-    + `<span class="settings-group-kicker">Deploy status</span><h3>Последняя операция</h3></div></div>`
+    + `<span class="settings-group-kicker">Статус обновления</span><h3>Последняя операция</h3></div></div>`
     + `<div class="version-deploy-status ${esc(deployState)}"><i></i><div><b>${esc(deployMessage)}</b>`
     + `<p>${deployVersion ? `Версия ${esc(deployVersion)} · ` : ""}${esc(deployUpdated)}</p></div></div></div></div>`;
 
   const panels = SETTING_SECTIONS.map((section) =>
     `<section class="settings-panel" id="settings-${section.id}" role="tabpanel" `
     + `data-settings-panel="${section.id}"${section.id === activeTab ? "" : " hidden"}>`
-    + (section.id === "storage" ? ""
+    + (section.id === "storage" || section.id === "versions" ? ""
       : `<div class="settings-section-head"><h2>${esc(section.label)}</h2>`
         + `<p>${esc(section.description)}</p></div>`)
     + (section.id === "storage" ? storageContent
