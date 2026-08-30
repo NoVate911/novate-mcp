@@ -428,8 +428,30 @@ form.inline input { flex: 1; min-width: 180px; }
   font-size: 14px; margin-bottom: 16px; text-align: left;
 }
 
+/* ---- версии и обновления ---- */
+.version-shell { display: flex; flex-direction: column; gap: 30px; }
+.version-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.version-card { min-height: 126px; padding: 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+.version-card span { display: block; margin-bottom: 12px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .7px; }
+.version-card b { display: block; font-size: clamp(20px, 4vw, 28px); letter-spacing: -.03em; }
+.version-card p { margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.version-form { display: grid; grid-template-columns: minmax(180px, 1fr) auto; gap: 10px; align-items: end; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+.version-form label { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-weight: 700; }
+.version-form select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--text); background: var(--bg); font: inherit; }
+.version-form select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.version-form .btn { min-height: 44px; }
+.version-form .btn:disabled { opacity: .55; cursor: wait; transform: none; }
+.release-notes { min-height: 120px; max-height: 360px; overflow: auto; padding: 18px; white-space: pre-wrap; user-select: text; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); font-size: 13px; line-height: 1.65; }
+.release-link { display: inline-block; margin-top: 12px; font-size: 13px; }
+.version-deploy-status { display: flex; gap: 12px; align-items: flex-start; padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.version-deploy-status > i { width: 10px; height: 10px; margin-top: 5px; flex: 0 0 auto; border-radius: 50%; background: var(--muted); }
+.version-deploy-status.running > i { background: #f0b35a; }
+.version-deploy-status.success > i { background: var(--accent); }
+.version-deploy-status.error > i { background: #ff5a6e; }
+.version-deploy-status p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+
 @media (max-width: 860px) {
-  .s3-actions-grid { grid-template-columns: 1fr; }
+  .s3-actions-grid, .version-grid { grid-template-columns: 1fr; }
   .s3-action-card { min-height: 0; }
   .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filters input[type=search] { grid-column: 1 / -1; }
@@ -440,7 +462,8 @@ form.inline input { flex: 1; min-width: 180px; }
   .settings-guide { padding: 18px; }
   .settings-guide-icon { display: none; }
   .settings-guide-points { flex-direction: column; align-items: stretch; }
-  .filters { grid-template-columns: 1fr; }
+  .filters, .version-form { grid-template-columns: 1fr; }
+  .version-form .btn { width: 100%; }
   .filters input[type=search] { grid-column: auto; }
   .card { align-items: flex-start; flex-direction: column; }
   .card-actions { justify-content: flex-start; }

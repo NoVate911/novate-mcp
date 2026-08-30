@@ -36,6 +36,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import * as settings from "./settings.ts";
 import { createSessionCodec } from "./session.ts";
 import { monitoringHistory, monitoringSnapshot, startMonitoring } from "./monitor.ts";
+import { loadVersionsInfo, versionCanBeDeployed } from "./versions.ts";
 import { esc, fmtTime, header, humanSize, loginPage, mask, shell, toast } from "./ui.ts";
 
 const DATA_DIR = resolve(process.env.MCP_DATA_DIR || "/data");
@@ -57,7 +58,7 @@ const TG_ISSUER = "https://oauth.telegram.org";
 
 // Редактируемые в панели настройки
 type SettingMode = "text" | "external-secret" | "generated-secret";
-type SettingSection = "telegram" | "access" | "backups" | "storage";
+type SettingSection = "telegram" | "access" | "backups" | "storage" | "versions";
 type EditableSetting = {
   key: string; label: string; hint: string; mode: SettingMode; section: SettingSection;
 };
@@ -67,6 +68,7 @@ const SETTING_SECTIONS: Array<{ id: SettingSection; label: string; description: 
   { id: "access", label: "Доступ и безопасность", description: "Сессии панели и токен MCP-доступа." },
   { id: "backups", label: "Бэкапы", description: "Расписание, хранение и шифрование резервных копий." },
   { id: "storage", label: "S3-хранилище", description: "Состояние постоянного хранилища проектов. Изменяется только через .env." },
+  { id: "versions", label: "Версии", description: "Установленная версия, доступные релизы и безопасное обновление." },
 ];
 
 const EDITABLE: EditableSetting[] = [
@@ -774,10 +776,14 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     flash = toast("Переопределение сброшено — снова действует значение из .env.", "success");
   } else if (!generated && url.searchParams.has("s3-action")) {
     flash = toast("Команда S3 принята. Статус обновится в течение нескольких секунд.", "success");
+  } else if (!generated && url.searchParams.has("version-requested")) {
+    flash = toast("Обновление принято. Хостовый deploy-runner выполнит проверяемый deploy с rollback.", "success");
+  } else if (!generated && url.searchParams.has("version-error")) {
+    flash = toast("Не удалось принять обновление. Проверьте статус и повторите попытку.", "error");
   }
 
   const rows: Record<SettingSection, string[]> = {
-    telegram: [], access: [], backups: [], storage: [],
+    telegram: [], access: [], backups: [], storage: [], versions: [],
   };
   for (const item of EDITABLE) {
     const effective = settings.get(item.key);
@@ -945,6 +951,40 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
       : `<div class="s3-disabled"><b>S3-хранилище отключено</b>`
         + `<p>Установите S3_ENABLED=true и заполните обязательные параметры в .env, чтобы открыть ручные операции.</p></div>`)
     + `</div>`;
+  let deployStatus: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(`${CONFIG_DIR}/deploy-status.json`, "utf8"));
+    if (parsed && typeof parsed === "object") deployStatus = parsed;
+  } catch { /* deploy ещё не запускался */ }
+  const installed = (process.env.NOVATE_VERSION || "latest").trim() || "latest";
+  const deployState = String(deployStatus.state || "idle");
+  const deployMessage = String(deployStatus.message || "Обновления из панели ещё не запускались.");
+  const deployVersion = String(deployStatus.version || "");
+  const deployUpdated = statusTime(deployStatus.updated_at);
+  const versionContent = `<div class="version-shell" data-versions-root data-installed="${esc(installed)}">`
+    + `<div class="version-grid">`
+    + `<article class="version-card"><span>Установленная версия</span><b>${esc(installed)}</b>`
+    + `<p>${installed === "latest" ? "Канал latest: при следующем deploy будет выбран свежий образ main." : "Версия закреплена на конкретном релизе."}</p></article>`
+    + `<article class="version-card" data-version-summary><span>Проверка обновлений</span>`
+    + `<b data-version-latest>Проверяем GitHub Releases…</b><p data-version-message>Получаем список опубликованных версий.</p></article>`
+    + `</div>`
+    + `<div class="settings-group"><div class="settings-group-head"><div>`
+    + `<span class="settings-group-kicker">Обновление</span><h3>Выберите опубликованный релиз</h3>`
+    + `<p>Панель создаёт только подписанный запрос. Отдельный хостовый runner запускает deploy.sh, проверяет Cosign, readiness и выполняет rollback при ошибке.</p>`
+    + `</div></div><form class="version-form" method="post" action="/version-update" data-version-form>`
+    + `<label for="version-select">Версия</label><select id="version-select" name="version" data-version-select disabled>`
+    + `<option>Загрузка списка релизов…</option></select>`
+    + `<button class="btn" type="submit" data-version-submit disabled>Установить версию</button></form></div>`
+    + `<div class="settings-group"><div class="settings-group-head"><div>`
+    + `<span class="settings-group-kicker">Последний релиз</span><h3 data-release-title>Описание появится после проверки</h3>`
+    + `<p data-release-meta>GitHub Releases</p></div></div>`
+    + `<div class="release-notes" data-release-notes>Загрузка changelog…</div>`
+    + `<a class="release-link" data-release-link href="https://github.com/NoVate911/novate-mcp/releases" target="_blank" rel="noreferrer">Открыть релизы на GitHub ↗</a></div>`
+    + `<div class="settings-group"><div class="settings-group-head"><div>`
+    + `<span class="settings-group-kicker">Deploy status</span><h3>Последняя операция</h3></div></div>`
+    + `<div class="version-deploy-status ${esc(deployState)}"><i></i><div><b>${esc(deployMessage)}</b>`
+    + `<p>${deployVersion ? `Версия ${esc(deployVersion)} · ` : ""}${esc(deployUpdated)}</p></div></div></div></div>`;
+
   const panels = SETTING_SECTIONS.map((section) =>
     `<section class="settings-panel" id="settings-${section.id}" role="tabpanel" `
     + `data-settings-panel="${section.id}"${section.id === activeTab ? "" : " hidden"}>`
@@ -952,6 +992,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
       : `<div class="settings-section-head"><h2>${esc(section.label)}</h2>`
         + `<p>${esc(section.description)}</p></div>`)
     + (section.id === "storage" ? storageContent
+      : section.id === "versions" ? versionContent
       : `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>`)
     + `</section>`,
   ).join("");
@@ -1086,6 +1127,21 @@ async function route(req: Request): Promise<Response> {
       return redirect(`/auth/telegram?next=${encodeURIComponent(path)}`);
     }
     return redirect("/login");
+  }
+
+  if (method === "GET" && path === "/api/versions") {
+    try {
+      const info = await loadVersionsInfo();
+      return new Response(JSON.stringify(info), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    } catch (err) {
+      console.error("Не удалось проверить GitHub Releases:", err);
+      return new Response(JSON.stringify({ error: "Не удалось получить список релизов GitHub." }), {
+        status: 502,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
   }
 
   if (method === "GET" && path === "/api/storage-status") {
@@ -1324,6 +1380,30 @@ async function route(req: Request): Promise<Response> {
       action, requested_at: new Date().toISOString(), requested_by: session.uid,
     }), { encoding: "utf8", mode: 0o600 });
     return redirect("/settings?tab=storage&s3-action=1");
+  }
+
+  if (method === "POST" && path === "/version-update") {
+    if (!isSameOriginPost(req)) return redirect("/settings?tab=versions&version-error=origin");
+    const form = await req.formData();
+    const version = String(form.get("version") || "").trim();
+    try {
+      if (!await versionCanBeDeployed(version)) {
+        return redirect("/settings?tab=versions&version-error=version");
+      }
+      writeFileSync(`${CONFIG_DIR}/deploy-request.json`, JSON.stringify({
+        version, requested_at: new Date().toISOString(), requested_by: session.uid,
+      }), { encoding: "utf8", mode: 0o600, flag: "wx" });
+      tgNotify(`🚀 <b>Запрошено обновление NoVate MCP</b>
+
+`
+        + `<b>Версия:</b> <code>${tgEsc(version)}</code>
+`
+        + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
+      return redirect("/settings?tab=versions&version-requested=1");
+    } catch (err) {
+      console.error("Не удалось создать deploy-запрос:", err);
+      return redirect("/settings?tab=versions&version-error=request");
+    }
   }
 
   if (method === "GET" && path === "/monitoring") return html(monitoringPage(session.name));

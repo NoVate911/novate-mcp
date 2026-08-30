@@ -141,6 +141,8 @@ document.querySelectorAll<HTMLElement>(".settings-tabs").forEach((tabList) => {
       activate(next.dataset.settingsTab || "");
     });
   });
+  tabs.find((tab) => tab.getAttribute("aria-selected") === "true")
+    ?.scrollIntoView({ block: "nearest", inline: "center" });
 });
 
 
@@ -192,3 +194,79 @@ for (const form of document.querySelectorAll<HTMLFormElement>("[data-delete-proj
     if (button) button.disabled = true;
   });
 }
+
+// Версии: список релизов загружается только после входа через защищённый API.
+type ReleaseInfo = {
+  version: string; name: string; notes: string; url: string; publishedAt: string;
+};
+type VersionsInfo = {
+  installed: string; latest: ReleaseInfo | null; releases: ReleaseInfo[];
+  updateAvailable: boolean; trackingLatest: boolean; checkedAt: string;
+};
+const versionsRoot = document.querySelector<HTMLElement>("[data-versions-root]");
+if (versionsRoot) {
+  const latest = versionsRoot.querySelector<HTMLElement>("[data-version-latest]");
+  const message = versionsRoot.querySelector<HTMLElement>("[data-version-message]");
+  const title = versionsRoot.querySelector<HTMLElement>("[data-release-title]");
+  const meta = versionsRoot.querySelector<HTMLElement>("[data-release-meta]");
+  const notes = versionsRoot.querySelector<HTMLElement>("[data-release-notes]");
+  const link = versionsRoot.querySelector<HTMLAnchorElement>("[data-release-link]");
+  const select = versionsRoot.querySelector<HTMLSelectElement>("[data-version-select]");
+  const submit = versionsRoot.querySelector<HTMLButtonElement>("[data-version-submit]");
+  const form = versionsRoot.querySelector<HTMLFormElement>("[data-version-form]");
+
+  const showRelease = (release: ReleaseInfo): void => {
+    if (title) title.textContent = `${release.name} · ${release.version}`;
+    if (meta) {
+      const date = release.publishedAt ? new Date(release.publishedAt).toLocaleString("ru-RU") : "дата не указана";
+      meta.textContent = `Опубликован ${date}`;
+    }
+    if (notes) notes.textContent = release.notes;
+    if (link && release.url) link.href = release.url;
+  };
+
+  void fetch("/api/versions", { cache: "no-store" }).then(async (response) => {
+    if (!response.ok) throw new Error("release request failed");
+    return await response.json() as VersionsInfo;
+  }).then((info) => {
+    if (!info.latest || info.releases.length === 0) throw new Error("no releases");
+    if (latest) latest.textContent = info.latest.version;
+    if (message) {
+      message.textContent = info.trackingLatest
+        ? "Используется канал latest. Можно закрепить любой опубликованный релиз."
+        : info.updateAvailable ? "Доступно обновление." : "Установлена актуальная опубликованная версия.";
+    }
+    if (select) {
+      select.replaceChildren(...info.releases.map((release) => {
+        const option = document.createElement("option");
+        option.value = release.version;
+        option.textContent = `${release.version}${release.version === info.installed ? " · установлена" : ""}`;
+        return option;
+      }));
+      select.value = info.updateAvailable ? info.latest.version
+        : info.releases.some((release) => release.version === info.installed) ? info.installed
+        : info.latest.version;
+      select.disabled = false;
+      select.addEventListener("change", () => {
+        const release = info.releases.find((item) => item.version === select.value);
+        if (release) showRelease(release);
+      });
+    }
+    if (submit) submit.disabled = false;
+    showRelease(info.latest);
+  }).catch(() => {
+    if (latest) latest.textContent = "Проверка недоступна";
+    if (message) message.textContent = "Не удалось получить GitHub Releases. Повторите позже.";
+    if (notes) notes.textContent = "Описание релиза временно недоступно.";
+  });
+
+  form?.addEventListener("submit", (event) => {
+    const version = select?.value || "";
+    if (!version || !window.confirm(`Установить NoVate MCP ${version}? При ошибке deploy.sh выполнит rollback.`)) {
+      event.preventDefault();
+      return;
+    }
+    if (submit) { submit.disabled = true; submit.textContent = "Запускаем…"; }
+  });
+}
+

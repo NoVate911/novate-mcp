@@ -40,7 +40,7 @@ jobs:
         run: pip install fastmcp boto3 pyyaml
       - name: Static checks
         run: |
-          bash -n install.sh deploy.sh
+          bash -n install.sh deploy.sh deploy-runner.sh
           python -m py_compile src/server.py src/settings.py src/storage.py src/backup.py src/healthcheck.py
           python - <<'PY'
           from pathlib import Path

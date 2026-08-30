@@ -48,6 +48,10 @@
 - `src/dashboard/ui.ts` — дизайн-система: CSS-константа, каркасы страниц, helpers.
 - `src/dashboard/client.ts` — клиентский JS; при сборке образа компилируется
   `bun build --minify` в `public/client.js`.
+- `src/dashboard/versions.ts` — GitHub Releases, сравнение версий и строгая
+  проверка разрешённых release tags для обновления из панели.
+- `deploy-runner.sh` — хостовый обработчик запросов панели: запускает `deploy.sh`
+  без передачи Docker socket контейнеру dashboard и пишет статус в dashboard-data.
 - `Dockerfile` — multi-stage: stage `mcp` (python:3.12-slim),
   stage `dashboard` (oven/bun:1) и stage `backup` (python:3.12-slim).
 - `docker-compose.yml`, `Caddyfile`, `.env.example` — инфра-файлы, их
@@ -273,6 +277,10 @@ Web Login**. Там выдаются Client ID + Client Secret (парой!) и 
 
 - Деплой = пуш в main -> GitHub Actions (matrix: mcp + dashboard + backup) ->
   GHCR -> на сервере `cd ~/mcp-server && docker compose pull && docker compose up -d`.
+- Обновление из панели работает только через systemd path unit, установленный
+  `install.sh`: dashboard создаёт `dashboard-data/deploy-request.json`, хостовый
+  `deploy-runner.sh` повторно валидирует версию и вызывает `deploy.sh`. Docker socket
+  в dashboard не монтировать. Статус хранится в `dashboard-data/deploy-status.json`.
 - Первая установка на чистый сервер: только `install.sh` (он ставит
   Docker, UFW, качает инфра-файлы из main, генерирует токены, создаёт
   папки projects/, dashboard-data/, backups/).

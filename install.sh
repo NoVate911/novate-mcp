@@ -6,8 +6,8 @@
 # Код проекта НЕ копируется на сервер: GitHub Actions собирает
 # Docker-образы и кладёт их в GHCR (ghcr.io/novate911/novate-mcp).
 # Сервер скачивает готовые образы через docker compose pull.
-# Этот скрипт забирает из репозитория только 3 инфра-файла:
-# docker-compose.yml, Caddyfile, .env.example
+# Этот скрипт забирает из репозитория только инфра-файлы:
+# docker-compose.yml, Caddyfile, .env.example, deploy.sh и deploy-runner.sh.
 #
 # Запуск от root:  bash install.sh
 # ============================================================
@@ -58,7 +58,7 @@ echo "=== [5/7] Инфра-файлы из GitHub ==="
 mkdir -p "$BASE_DIR"
 cd "$BASE_DIR"
 
-for f in docker-compose.yml Caddyfile .env.example; do
+for f in docker-compose.yml Caddyfile .env.example deploy.sh deploy-runner.sh; do
   if ! curl -fsSL "$REPO_RAW/$f" -o "$f"; then
     echo ""
     echo "!!! ОШИБКА: не удалось скачать $f"
@@ -70,6 +70,38 @@ for f in docker-compose.yml Caddyfile .env.example; do
   fi
   echo "  скачан $f"
 done
+
+chmod 755 deploy.sh deploy-runner.sh
+mkdir -p "$BASE_DIR/dashboard-data"
+
+# Панель не получает Docker socket и root-доступ. Она пишет строго проверенный
+# запрос в dashboard-data, а systemd запускает deploy-runner на хосте.
+cat > /etc/systemd/system/novate-deploy-request.service <<EOF
+[Unit]
+Description=NoVate MCP deploy request runner
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$BASE_DIR
+ExecStart=/usr/bin/bash $BASE_DIR/deploy-runner.sh
+TimeoutStartSec=infinity
+EOF
+
+cat > /etc/systemd/system/novate-deploy-request.path <<EOF
+[Unit]
+Description=Watch NoVate MCP dashboard deploy requests
+
+[Path]
+PathExists=$BASE_DIR/dashboard-data/deploy-request.json
+Unit=novate-deploy-request.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now novate-deploy-request.path
 
 # Миграция со старых версий: sites -> projects
 if [ -d sites ] && [ ! -d projects ]; then
