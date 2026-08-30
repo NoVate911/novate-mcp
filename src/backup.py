@@ -56,6 +56,38 @@ CHECK_EVERY = 60
 # Допустимое имя архива: плоское, без путей и подкаталогов
 ARCHIVE_RE = re.compile(r"^[\w.-]+\.tar\.gz(\.enc)?$")
 
+# Генерируемые и служебные данные не нужны в резервных копиях проектов.
+# Символические и жёсткие ссылки также пропускаются: restore drill намеренно
+# запрещает их, чтобы архив нельзя было использовать для выхода за /data.
+BACKUP_EXCLUDED_NAMES = {"node_modules", ".git", ".cache", "tmp", "__pycache__"}
+BACKUP_EXCLUDED_SUFFIXES = (".pyc", ".log")
+
+
+def backup_tar_filter(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """Исключить генерируемые данные и ссылки из создаваемого tar.gz."""
+    normalized = member.name.replace("\\", "/").strip("/")
+    parts = tuple(part for part in normalized.split("/") if part)
+    if member.issym() or member.islnk():
+        return None
+    if any(part in BACKUP_EXCLUDED_NAMES for part in parts):
+        return None
+    if parts and parts[-1].endswith(BACKUP_EXCLUDED_SUFFIXES):
+        return None
+    return member
+
+
+def project_path_is_excluded(path: Path) -> bool:
+    """Те же исключения для счётчика файлов, что и для tar-архива."""
+    try:
+        parts = path.relative_to(DATA_DIR).parts
+    except ValueError:
+        return True
+    return (
+        path.is_symlink()
+        or any(part in BACKUP_EXCLUDED_NAMES for part in parts)
+        or (bool(parts) and parts[-1].endswith(BACKUP_EXCLUDED_SUFFIXES))
+    )
+
 
 def log(msg: str) -> None:
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -80,10 +112,10 @@ def keep_count() -> int:
 
 
 def count_project_files() -> int:
-    """Число файлов в проектах (для подписи к бэкапу)."""
+    """Число сохраняемых файлов в проектах (для подписи к бэкапу)."""
     total = 0
     for p in DATA_DIR.rglob("*"):
-        if p.is_file():
+        if not project_path_is_excluded(p) and p.is_file():
             total += 1
     return total
 
@@ -104,7 +136,7 @@ def make_archive(tag: str = "") -> Path:
         time.sleep(1.1)
     with tarfile.open(out, "w:gz") as tar:
         if DATA_DIR.is_dir():
-            tar.add(DATA_DIR, arcname="projects")
+            tar.add(DATA_DIR, arcname="projects", filter=backup_tar_filter)
         overrides = CONFIG_DIR / "overrides.json"
         if overrides.is_file():
             tar.add(overrides, arcname="dashboard-data/overrides.json")

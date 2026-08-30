@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -83,6 +84,33 @@ class BackupRestoreE2ETests(unittest.TestCase):
     @unittest.skipUnless(os.system("openssl version >/dev/null 2>&1") == 0, "openssl is required")
     def test_encrypted_backup_restore_round_trip(self):
         self.assert_round_trip(encrypted=True)
+
+    def test_backup_excludes_generated_files_and_links(self):
+        project = self.projects / "alpha"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "app.ts").write_text("source", encoding="utf-8")
+        (project / "node_modules" / "typescript" / "bin").mkdir(parents=True)
+        (project / "node_modules" / "typescript" / "bin" / "tsc").write_text(
+            "generated", encoding="utf-8"
+        )
+        (project / "node_modules" / ".bin").mkdir(parents=True)
+        (project / "node_modules" / ".bin" / "tsc").symlink_to("../typescript/bin/tsc")
+        (project / "debug.log").write_text("generated", encoding="utf-8")
+
+        archive = backup.make_archive()
+        with tarfile.open(archive, "r:gz") as tar:
+            members = tar.getmembers()
+            names = [member.name for member in members]
+
+        self.assertIn("projects/alpha/src/app.ts", names)
+        self.assertFalse(any("node_modules" in name for name in names))
+        self.assertFalse(any(name.endswith("debug.log") for name in names))
+        self.assertFalse(any(member.issym() or member.islnk() for member in members))
+        self.assertEqual(backup.count_project_files(), 1)
+        self.assertEqual(
+            backup.verify_restore_archive(archive, expected_files=1)["state"],
+            "ok",
+        )
 
     def test_stale_warning_is_sent_once_until_recovery(self):
         sent = []
