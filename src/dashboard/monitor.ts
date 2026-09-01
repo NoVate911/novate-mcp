@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
+import { mkdirSync, statfsSync, writeFileSync } from "node:fs";
+import { readJson } from "./admin.ts";
 import * as settings from "./settings.ts";
 
 const CONFIG_DIR = process.env.CONFIG_DIR || "/config";
@@ -24,13 +25,6 @@ export type MonitorSnapshot = {
 
 function htmlEsc(value: unknown): string {
   return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
-function readJson(path: string): JsonObject {
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed as JsonObject : {};
-  } catch { return {}; }
 }
 
 function numberSetting(key: string, fallback: number): number {

@@ -180,7 +180,8 @@ def maybe_encrypt(archive: Path):
 def prune() -> None:
     """Удаляет старые архивы, оставляя BACKUP_KEEP самых свежих."""
     archives = sorted(
-        (p for p in BACKUP_DIR.glob("novate-backup-*") if p.is_file()),
+        (p for p in BACKUP_DIR.glob("novate-backup-*")
+         if p.is_file() and p.name.endswith((".tar.gz", ".tar.gz.enc"))),
         key=lambda p: p.stat().st_mtime,
     )
     for old in archives[:-keep_count()]:
@@ -534,7 +535,7 @@ def trigger_mtime() -> float:
 
 
 def restore_request():
-    """Запрос на восстановление от панели: (имя архива, mtime) или None."""
+    """Запрос на восстановление от панели: (имя архива, проект, mtime) или None."""
     try:
         st = RESTORE_FILE.stat()
     except OSError:

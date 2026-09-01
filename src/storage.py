@@ -341,9 +341,7 @@ class S3StorageCore(Storage):
             removed = [rel for rel in before if rel not in after]
             for rel in changed:
                 self.put_file(self._local_path(rel))
-            for rel in removed:
-                self._call("удаление файла", self.client.delete_object,
-                           Bucket=self.bucket, Key=self.key(rel))
+            self._delete_keys([self.key(rel) for rel in removed])
             return SyncResult(uploaded=len(changed), deleted=len(removed))
 
     def fetch_if_missing(self, rel: str) -> bool:

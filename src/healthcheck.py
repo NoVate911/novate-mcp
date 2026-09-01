@@ -5,19 +5,26 @@ import json
 import socket
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 
 def check_tcp(host: str, port: str) -> None:
     with socket.create_connection((host, int(port)), timeout=3):
-        return
+        pass
 
 
 def check_http(url: str, expected: str) -> None:
-    with urllib.request.urlopen(url, timeout=3) as response:
-        if response.status != int(expected):
-            raise RuntimeError(f"unexpected HTTP status {response.status}")
+    # urlopen поднимает HTTPError на 4xx/5xx, поэтому ожидаемый не-2xx
+    # статус (например, 401) берётся из самого исключения.
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    if status != int(expected):
+        raise RuntimeError(f"unexpected HTTP status {status}")
 
 
 def check_backup(path: str, max_age: str) -> None:

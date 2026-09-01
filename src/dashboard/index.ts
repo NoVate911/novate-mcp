@@ -50,6 +50,9 @@ const STATE_COOKIE = "oauth_state";
 const STATE_TTL = 600;
 const MAX_BACKUP_UPLOAD_BYTES = 512 * 1024 * 1024;
 const BACKUP_NAME_RE = /^novate-backup-\d{8}-\d{6}(?:-pre-restore)?\.tar\.gz(?:\.enc)?$/;
+// Имя любого архива (включая загруженные вручную): проверка была
+// продублирована в трёх обработчиках — теперь правило одно.
+const ARCHIVE_FILE_RE = /^[\w.-]+\.tar\.gz(?:\.enc)?$/;
 
 // Telegram OpenID Connect (https://core.telegram.org/widgets/login)
 const TG_AUTH_URL = "https://oauth.telegram.org/auth";
@@ -659,7 +662,7 @@ function backupsPage(url: URL, user: string): string {
     flash = toast(url.searchParams.get("upload-error") || "Не удалось загрузить бэкап.", "error");
   }
   const confirmName = url.searchParams.get("confirm") || "";
-  if (confirmName && /^[\w.-]+\.tar\.gz(\.enc)?$/.test(confirmName)) {
+  if (confirmName && ARCHIVE_FILE_RE.test(confirmName)) {
     flash += `<div class="note rise" style="border-left-color:#ff5a6e">`
       + `<b>Восстановить проекты из архива ${esc(confirmName)}?</b><br>`
       + `Текущее содержимое проектов будет перезаписано. Перед этим автоматически `
@@ -1442,7 +1445,7 @@ async function route(req: Request): Promise<Response> {
     const form = await req.formData();
     const file = String(form.get("file") || "");
     const project = String(form.get("project") || "").trim();
-    if (!/^[\w.-]+\.tar\.gz(\.enc)?$/.test(file)) return redirect("/backups");
+    if (!ARCHIVE_FILE_RE.test(file)) return redirect("/backups");
     if (project && (!/^[A-Za-z0-9_.-]{1,120}$/.test(project) || project === "." || project === "..")) return redirect("/backups");
     try {
       if (!statSync(resolve(BACKUP_DIR, file)).isFile()) return redirect("/backups");
@@ -1466,7 +1469,7 @@ async function route(req: Request): Promise<Response> {
     let name = "";
     try { name = decodeURIComponent(path.slice("/backup-file/".length)); } catch { return redirect("/backups"); }
     // Только плоское имя архива — никаких путей
-    if (!/^[\w.-]+\.tar\.gz(\.enc)?$/.test(name)) return redirect("/backups");
+    if (!ARCHIVE_FILE_RE.test(name)) return redirect("/backups");
     const target = resolve(BACKUP_DIR, name);
     if (!target.startsWith(BACKUP_DIR + "/")) return redirect("/backups");
     try {
@@ -1521,7 +1524,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === "GET" && path.startsWith("/deploy-log/")) {
     const name = basename(decodeURIComponent(path.slice("/deploy-log/".length)));
-    if (!/^panel-deploy-[0-9a-z-]+\\.log$/.test(name)) return new Response("Not found", { status: 404 });
+    if (!/^panel-deploy-[0-9a-z-]+\.log$/.test(name)) return new Response("Not found", { status: 404 });
     const target = `${CONFIG_DIR}/deploy-logs/${name}`;
     try { if (!statSync(target).isFile()) throw new Error("missing"); } catch { return new Response("Not found", { status: 404 }); }
     return new Response(readFileSync(target, "utf8"), { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });

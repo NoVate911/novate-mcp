@@ -415,8 +415,22 @@ def server_stats() -> str:
 # чтобы не публиковаться на /projects/ и не попадать в бэкапы.
 # Перезапуск контейнера очищает задачи и логи.
 TASKS_DIR = Path("/tmp/mcp-tasks")
+# Журнал фоновых задач ограничен: без этого словари росли всю работу
+# контейнера и удерживали завершённые Popen-объекты.
+MAX_TRACKED_TASKS = 200
 _tasks: dict[str, subprocess.Popen] = {}
 _task_sync: dict[str, str] = {}
+
+
+def _prune_tasks() -> None:
+    """Удалить самые старые завершённые задачи из журнала."""
+    excess = len(_tasks) - MAX_TRACKED_TASKS
+    if excess <= 0:
+        return
+    finished = [tid for tid, proc in _tasks.items() if proc.poll() is not None]
+    for task_id in finished[:excess]:
+        _tasks.pop(task_id, None)
+        _task_sync.pop(task_id, None)
 
 
 def _finish_background(task_id: str, proc: subprocess.Popen, before: Snapshot, log_file: Path) -> None:
@@ -452,6 +466,7 @@ def run_background(command: str) -> str:
             stdout=f, stderr=subprocess.STDOUT, text=True,
             start_new_session=True,
         )
+    _prune_tasks()
     _tasks[task_id] = proc
     _task_sync[task_id] = "ожидание завершения"
     threading.Thread(
