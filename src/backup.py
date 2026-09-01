@@ -284,7 +284,7 @@ def write_status(status: dict) -> None:
 
 
 def restore_drill_enabled() -> bool:
-    return (settings.get("BACKUP_RESTORE_DRILL") or "true").strip().lower() in {"1", "true", "yes", "on"}
+    return settings.is_truthy(settings.get("BACKUP_RESTORE_DRILL") or "true")
 
 
 def verify_restore_archive(archive: Path, expected_files: int | None = None) -> dict:
@@ -436,7 +436,7 @@ def do_restore(name: str, project: str = "") -> None:
                 tar.extract(member, DATA_DIR, filter="data")
                 restored += 1
         log(f"восстановлено объектов: {restored}")
-        if os.environ.get("S3_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        if settings.is_truthy(os.environ.get("S3_ENABLED", "false")):
             S3_SYNC_TRIGGER.write_text(str(time.time_ns()), encoding="utf-8")
         tg_text(
             "✅ <b>Восстановление завершено</b>\n\n"

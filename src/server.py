@@ -116,6 +116,9 @@ def serve_health() -> None:
     ThreadingHTTPServer(("127.0.0.1", HEALTH_PORT), HealthHandler).serve_forever()
 
 
+S3_ACTION_TRIGGER = Path(os.environ.get("CONFIG_DIR", "/config")) / "s3-action.json"
+
+
 def startup_reconciliation() -> None:
     """Проверяет S3 и объединяет данные, не задерживая запуск FastMCP HTTP."""
     global STARTUP_ERROR
@@ -526,7 +529,6 @@ def make_backup() -> str:
 
 
 S3_SYNC_TRIGGER = DATA_DIR / ".s3-sync-needed"
-S3_ACTION_TRIGGER = Path(os.environ.get("CONFIG_DIR", "/config")) / "s3-action.json"
 
 
 def watch_external_sync() -> None:

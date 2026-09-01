@@ -13,13 +13,14 @@ export function esc(s: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Человекочитаемый размер. Шкала совпадает с _human() в src/server.py. */
 export function humanSize(n: number): string {
   let size = n;
-  for (const unit of ["Б", "КБ", "МБ", "ГБ"]) {
+  for (const unit of ["Б", "КБ", "МБ", "ГБ", "ТБ"]) {
     if (size < 1024) return `${size.toFixed(1)} ${unit}`;
     size /= 1024;
   }
-  return `${size.toFixed(1)} ТБ`;
+  return `${size.toFixed(1)} ПБ`;
 }
 
 export function mask(v: string): string {
@@ -104,6 +105,43 @@ h1 a { color: inherit; text-decoration: none; }
 .nav a:hover { color: var(--text); }
 .nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
 .nav .user { margin-left: 24px; font-size: 14px; color: var(--muted); }
+
+/* ---- бургер-меню (мобильная версия) ---- */
+.nav-toggle {
+  display: none; width: 42px; height: 42px; padding: 10px 9px;
+  flex-direction: column; justify-content: space-between; align-items: stretch;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; transition: border-color .2s ease;
+}
+.nav-toggle:hover { border-color: rgba(139, 148, 160, .5); }
+.nav-toggle:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.nav-toggle span {
+  display: block; height: 2px; background: var(--text); border-radius: 2px;
+  transition: transform .2s ease, opacity .2s ease;
+}
+.nav-toggle[aria-expanded="true"] span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+.nav-toggle[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+.nav-toggle[aria-expanded="true"] span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+@media (max-width: 720px) {
+  .topbar-inner { flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
+  .nav-toggle { display: flex; }
+  .nav {
+    display: none; width: 100%; flex-direction: column; align-items: stretch;
+    border-top: 1px solid var(--border);
+  }
+  .nav.open { display: flex; animation: rise .18s ease both; }
+  .nav a, .nav .user {
+    display: flex; align-items: center; min-height: 44px;
+    margin-left: 0; padding: 0 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav a.active { border-bottom-color: var(--accent); }
+  .nav a:last-child { border-bottom: none; }
+  .wrap { padding: 20px 16px 48px; }
+  /* iOS не зумит страницу при фокусе, если шрифт поля не меньше 16px. */
+  input, select, textarea { font-size: 16px; }
+}
 
 /* ---- анимации появления ---- */
 @keyframes rise {
@@ -500,7 +538,7 @@ export function shell(title: string, content: string): string {
     + `<meta name="viewport" content="width=device-width, initial-scale=1">`
     + `<title>${esc(title)}</title><style>${CSS}</style></head><body>`
     + content
-    + `<script src="/static/client.js?v=7" defer></script></body></html>`;
+    + `<script src="/static/client.js?v=8" defer></script></body></html>`;
 }
 
 /** Липкая шапка с навигацией. */
@@ -509,7 +547,9 @@ export function header(active: string, user = ""): string {
   const who = user ? `<span class="user">👤 ${esc(user)}</span>` : "";
   return `<div class="topbar"><div class="topbar-inner">`
     + `<h1><a href="/">NoVate <span>MCP</span></a></h1>`
-    + `<nav class="nav">`
+    + `<button class="nav-toggle" type="button" data-nav-toggle aria-label="Меню"`
+    + ` aria-expanded="false" aria-controls="main-nav"><span></span><span></span><span></span></button>`
+    + `<nav class="nav" id="main-nav" data-nav>`
     + `<a${cls("projects")} href="/">Проекты</a>`
     + `<a${cls("backups")} href="/backups">Бэкапы</a>`
     + `<a${cls("monitoring")} href="/monitoring">Мониторинг</a>`

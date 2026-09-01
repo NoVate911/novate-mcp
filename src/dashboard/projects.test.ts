@@ -97,10 +97,12 @@ test("authenticated user can delete one top-level project and trigger S3 sync", 
     redirect: "manual",
     headers: {
       Cookie: `dash_auth=${cookie}`,
-      Origin: origin,
+      // Caddy отдаёт Referrer-Policy: no-referrer, поэтому браузер шлёт Origin: null.
+      // Именно этот случай раньше ломал удаление проекта.
+      Origin: "null",
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({ project: "delete-me" }),
+    body: new URLSearchParams({ project: "delete-me", csrf: codec.csrfToken("42") }),
   });
   expect([302, 303]).toContain(response.status);
   expect(response.headers.get("location")).toContain("/?deleted=delete-me");
@@ -111,24 +113,51 @@ test("authenticated user can delete one top-level project and trigger S3 sync", 
   expect(action.requested_by).toBe("42");
 });
 
-test("project deletion rejects cross-origin and traversal requests", async () => {
+test("project deletion rejects forged, cross-origin and traversal requests", async () => {
   const outside = join(root, "outside");
   mkdirSync(outside, { recursive: true });
   writeFileSync(join(outside, "keep.txt"), "keep");
   const codec = createSessionCodec(() => "s".repeat(64));
   const cookie = codec.packSigned({ uid: "42", name: "Tester", ts: Math.floor(Date.now() / 1000) });
+  const csrf = codec.csrfToken("42");
   const origin = `http://127.0.0.1:${port}`;
-  const crossOrigin = await fetch(`${origin}/delete-project`, {
-    method: "POST", redirect: "manual",
-    headers: { Cookie: `dash_auth=${cookie}`, Origin: "https://attacker.invalid", "Content-Type": "application/x-www-form-urlencoded" },
+  const form = (extra: Record<string, string>) => ({
+    method: "POST", redirect: "manual" as const,
+    headers: {
+      Cookie: `dash_auth=${cookie}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      ...extra,
+    },
+  });
+
+  // Без CSRF-токена запрос отклоняется даже с валидной сессией.
+  const noToken = await fetch(`${origin}/delete-project`, {
+    ...form({ Origin: origin }),
     body: new URLSearchParams({ project: "site" }),
   });
-  expect(crossOrigin.headers.get("location")).toContain("error=project-origin");
+  expect(noToken.status).toBe(403);
+
+  // Токен другого пользователя не подходит.
+  const wrongToken = await fetch(`${origin}/delete-project`, {
+    ...form({ Origin: origin }),
+    body: new URLSearchParams({ project: "site", csrf: codec.csrfToken("999") }),
+  });
+  expect(wrongToken.status).toBe(403);
+
+  // Явно чужой Origin отклоняется даже с валидным токеном.
+  const crossOrigin = await fetch(`${origin}/delete-project`, {
+    ...form({ Origin: "ht" + "tps://attacker.invalid" }),
+    body: new URLSearchParams({ project: "site", csrf }),
+  });
+  expect(crossOrigin.status).toBe(403);
+
+  // Обход каталога блокируется уже после успешной CSRF-проверки.
   const traversal = await fetch(`${origin}/delete-project`, {
-    method: "POST", redirect: "manual",
-    headers: { Cookie: `dash_auth=${cookie}`, Origin: origin, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ project: "../outside" }),
+    ...form({ Origin: origin }),
+    body: new URLSearchParams({ project: "../outside", csrf }),
   });
   expect(traversal.headers.get("location")).toContain("error=project-delete");
+
   expect(await Bun.file(join(outside, "keep.txt")).text()).toBe("keep");
+  expect(await Bun.file(join(projects, "site", "index.html")).text()).toContain("protected-project");
 });

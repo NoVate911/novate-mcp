@@ -1,6 +1,7 @@
 import { mkdirSync, statfsSync, writeFileSync } from "node:fs";
 import { readJson } from "./admin.ts";
 import * as settings from "./settings.ts";
+import { esc } from "./ui.ts";
 
 const CONFIG_DIR = process.env.CONFIG_DIR || "/config";
 const BACKUP_DIR = process.env.BACKUP_DIR || "/backups";
@@ -23,10 +24,6 @@ export type MonitorSnapshot = {
   problems: MonitorProblem[];
 };
 
-function htmlEsc(value: unknown): string {
-  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
 function numberSetting(key: string, fallback: number): number {
   const value = Number(settings.get(key) || process.env[key] || fallback);
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -45,7 +42,7 @@ export function monitoringSnapshot(now = Date.now()): MonitorSnapshot {
   } catch { /* reported below */ }
   const freePercent = totalBytes ? Math.round(freeBytes / totalBytes * 1000) / 10 : 0;
   const problems: MonitorProblem[] = [];
-  const s3Enabled = ["1", "true", "yes", "on"].includes((process.env.S3_ENABLED || "false").toLowerCase());
+  const s3Enabled = settings.s3Enabled();
   if (s3Enabled && (s3.connection === "error" || (s3.startup as JsonObject | undefined)?.state === "error")) {
     problems.push({ id: "s3-error", title: "Ошибка S3", detail: String(s3.last_error || "startup reconciliation failed") });
   }
@@ -90,13 +87,13 @@ export function startMonitoring(notify: (text: string) => void): void {
       for (const problem of current.problems) {
         if (previous.has(problem.id)) continue;
         events.unshift({ time: current.time, state: "error", ...problem });
-        notify(`🚨 <b>${htmlEsc(problem.title)}</b>\n\n${htmlEsc(problem.detail)}`);
+        notify(`🚨 <b>${esc(problem.title)}</b>\n\n${esc(problem.detail)}`);
       }
       for (const id of previous) {
         if (active.has(id)) continue;
         const title = id.replaceAll("-", " ");
         events.unshift({ time: current.time, state: "recovered", id, title, detail: "Состояние нормализовалось" });
-        notify(`✅ <b>Состояние восстановлено</b>\n\n${htmlEsc(title)}`);
+        notify(`✅ <b>Состояние восстановлено</b>\n\n${esc(title)}`);
       }
       persist(ALERT_STATE_FILE, { active: [...active], updated_at: current.time });
       persist(HISTORY_FILE, { events: events.slice(0, 200) });

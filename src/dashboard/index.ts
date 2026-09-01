@@ -34,7 +34,7 @@ import {
 import os from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import * as settings from "./settings.ts";
-import { createSessionCodec } from "./session.ts";
+import { b64url, createSessionCodec } from "./session.ts";
 import { monitoringHistory, monitoringSnapshot, startMonitoring } from "./monitor.ts";
 import { loadVersionsInfo, versionCanBeDeployed } from "./versions.ts";
 import { appendAudit, auditEvents, createManagedToken, deployHistory, hostStatus, managedTokens, preflightStatus, readJson, revokeManagedToken } from "./admin.ts";
@@ -110,11 +110,12 @@ const EDITABLE: EditableSetting[] = [
 const sessionCodec = createSessionCodec(() => settings.get("SESSION_SECRET"));
 const packSigned = sessionCodec.packSigned;
 const unpackSigned = sessionCodec.unpackSigned;
+const csrfToken = sessionCodec.csrfToken;
+const csrfMatches = sessionCodec.csrfMatches;
+// Имя скрытого поля с CSRF-токеном во всех изменяющих формах панели.
+const CSRF_FIELD = "csrf";
 
 // Используется также для OAuth state/challenge, которые не являются session cookie.
-function b64url(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
 
 function cookieStr(name: string, value: string, maxAge: number): string {
   return `${name}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Lax`;
@@ -154,13 +155,8 @@ function safeReturnTo(value: unknown): string {
 
 // ---------- уведомления в Telegram ----------
 
-function tgEsc(value: unknown): string {
-  return String(value)
-    .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
-}
 
-/** Неблокирующее HTML-уведомление в Telegram. Динамические значения передавать через tgEsc(). */
+/** Неблокирующее HTML-уведомление в Telegram. Динамические значения передавать через esc(). */
 function tgNotify(text: string): void {
   const token = settings.get("TG_BOT_TOKEN");
   const chatId = settings.get("TG_CHAT_ID");
@@ -306,9 +302,17 @@ function normalizedOrigin(value: string, defaultProtocol = "https"): string | nu
   try { return new URL(candidate).origin.toLowerCase(); } catch { return null; }
 }
 
+/**
+ * Дополнительная проверка Origin. Caddy отдаёт Referrer-Policy: no-referrer,
+ * поэтому для обычных POST-навигаций браузер присылает "Origin: null" —
+ * это не признак атаки. В таком случае решение принимает CSRF-токен формы.
+ * Отклоняем только явно чужой Origin.
+ */
 function isSameOriginPost(req: Request): boolean {
-  const suppliedOrigin = normalizedOrigin(req.headers.get("origin") || "");
-  if (!suppliedOrigin || suppliedOrigin === "null") return false;
+  const rawOrigin = (req.headers.get("origin") || "").trim();
+  if (!rawOrigin || rawOrigin.toLowerCase() === "null") return true;
+  const suppliedOrigin = normalizedOrigin(rawOrigin);
+  if (!suppliedOrigin) return false;
 
   const requestUrl = new URL(req.url);
   const forwardedHost = firstForwardedHeader(req, "x-forwarded-host");
@@ -326,6 +330,24 @@ function isSameOriginPost(req: Request): boolean {
   if (configuredOrigin) allowed.add(configuredOrigin);
 
   return allowed.has(suppliedOrigin);
+}
+
+/** Скрытое поле с CSRF-токеном: обязательно для каждой изменяющей формы. */
+function csrfInput(token: string): string {
+  return `<input type="hidden" name="${CSRF_FIELD}" value="${esc(token)}">`;
+}
+
+/** Проверка CSRF-токена формы: сравнение за постоянное время + контроль Origin. */
+function csrfOk(req: Request, form: FormData, session: Session): boolean {
+  return isSameOriginPost(req) && csrfMatches(session.uid, String(form.get(CSRF_FIELD) || ""));
+}
+
+/** Единый ответ на запрос, не прошедший CSRF-проверку. */
+function csrfRejected(): Response {
+  return html(shell("NoVate MCP — запрос отклонён",
+    header("") + `<div class="wrap"><div class="empty rise">`
+    + `Запрос отклонён: страница была открыта слишком давно или сессия устарела.<br><br>`
+    + `<a class="tag" href="/">Обновить страницу и повторить</a></div></div>`), 403);
 }
 
 function safePath(rel: string): string | null {
@@ -388,15 +410,13 @@ function walk(dir: string): { files: number; size: number; latest: number } {
 
 // ---------- страницы ----------
 
-function indexPage(url: URL, user: string): string {
+function indexPage(url: URL, user: string, csrf: string): string {
   const domain = settings.get("DOMAIN");
   let notification = "";
   if (url.searchParams.has("deleted")) {
     notification = toast(`Проект «${url.searchParams.get("deleted") || ""}» удалён. S3-сверка запущена.`, "success");
   } else if (url.searchParams.get("error") === "project-delete") {
     notification = toast("Не удалось удалить проект. Проверьте, что он существует и является обычной папкой.", "error");
-  } else if (url.searchParams.get("error") === "project-origin") {
-    notification = toast("Запрос удаления отклонён проверкой источника.", "error");
   } else if (url.searchParams.get("error") === "project-archive") {
     notification = toast("Не удалось начать скачивание проекта.", "error");
   }
@@ -421,6 +441,7 @@ function indexPage(url: URL, user: string): string {
       : "";
     const download = `<a class="tag" href="/download-project/${encodeURIComponent(name)}">Скачать</a>`;
     const remove = `<form class="project-delete-form" method="post" action="/delete-project" data-delete-project="${esc(name)}">`
+      + csrfInput(csrf)
       + `<input type="hidden" name="project" value="${esc(name)}">`
       + `<button class="project-delete-button" type="submit" title="Удалить проект" aria-label="Удалить проект ${esc(name)}">`
       + `<svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-1 11H8L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z"/></svg>`
@@ -646,7 +667,7 @@ function backupStatus(): BackupStatus | null {
   }
 }
 
-function backupsPage(url: URL, user: string): string {
+function backupsPage(url: URL, user: string, csrf: string): string {
   let flash = "";
   if (url.searchParams.has("verified")) {
     flash = toast("Целостность бэкапа проверена: архив безопасно читается и распаковывается.", "success");
@@ -667,7 +688,7 @@ function backupsPage(url: URL, user: string): string {
       + `<b>Восстановить проекты из архива ${esc(confirmName)}?</b><br>`
       + `Текущее содержимое проектов будет перезаписано. Перед этим автоматически `
       + `создаётся страховочный бэкап. Настройки панели (overrides.json) не восстанавливаются.`
-      + `<form method="post" action="/restore" style="margin-top:12px">`
+      + `<form method="post" action="/restore" style="margin-top:12px">` + csrfInput(csrf)
       + `<input type="hidden" name="file" value="${esc(confirmName)}">`
       + `<button class="btn" type="submit">Да, восстановить</button> `
       + `<a class="btn gray" href="/backups">Отмена</a></form></div>`;
@@ -740,8 +761,8 @@ function backupsPage(url: URL, user: string): string {
       .map((f) =>
         `<tr><td>🗄 ${esc(f.name)}<br><span class="muted">${(verifications[f.name] as Record<string, unknown> | undefined)?.state === "ok" ? "Целостность проверена" : "Не проверен вручную"}</span></td><td>${humanSize(f.size)}</td><td>${esc(fmtTime(f.mtime))}</td>`
         + `<td><a class="btn" href="/backup-file/${encodeURIComponent(f.name)}">Скачать</a> `
-        + `<form class="inline-form" method="post" action="/backup-verify"><input type="hidden" name="file" value="${esc(f.name)}"><button class="btn gray" type="submit">Проверить</button></form>`
-        + `<form class="inline-form" method="post" action="/restore"><input type="hidden" name="file" value="${esc(f.name)}"><select class="restore-project-select" name="project" aria-label="Проект для восстановления"><option value="">Все проекты</option>${projectOptions}</select><button class="btn gray" type="submit">Восстановить</button></form></td></tr>`,
+        + `<form class="inline-form" method="post" action="/backup-verify">${csrfInput(csrf)}<input type="hidden" name="file" value="${esc(f.name)}"><button class="btn gray" type="submit">Проверить</button></form>`
+        + `<form class="inline-form" method="post" action="/restore">${csrfInput(csrf)}<input type="hidden" name="file" value="${esc(f.name)}"><select class="restore-project-select" name="project" aria-label="Проект для восстановления"><option value="">Все проекты</option>${projectOptions}</select><button class="btn gray" type="submit">Восстановить</button></form></td></tr>`,
       )
       .join("");
     if (!rows) rows = `<tr><td colspan="4" style="text-align:center;color:var(--muted)">архивов пока нет</td></tr>`;
@@ -751,9 +772,9 @@ function backupsPage(url: URL, user: string): string {
 
   return shell("NoVate MCP — бэкапы",
     header("backups", user) + flash + `<div class="wrap">${statusHtml}`
-    + `<div class="backup-actions rise"><form method="post" action="/backup-now">`
+    + `<div class="backup-actions rise"><form method="post" action="/backup-now">${csrfInput(csrf)}`
     + `<button class="btn" type="submit">Сделать бэкап сейчас</button></form>`
-    + `<form method="post" action="/backup-upload" enctype="multipart/form-data" class="upload-form">`
+    + `<form method="post" action="/backup-upload" enctype="multipart/form-data" class="upload-form">${csrfInput(csrf)}`
     + `<label class="btn gray upload-button" for="backup-upload">`
     + `<span data-upload-text>Загрузить бэкап</span>`
     + `<input id="backup-upload" type="file" name="backup" accept=".tar.gz,.tar.gz.enc,.enc" `
@@ -778,19 +799,19 @@ function generatedSecretToast(secret: GeneratedSecret): string {
     + `<button class="toast-close" type="button" aria-label="Закрыть">×</button></div></div>`;
 }
 
-function tokenManagementHtml(): string {
+function tokenManagementHtml(csrf: string): string {
   const rows = managedTokens().map((item) => `<tr><td><b>${esc(item.name)}</b></td><td>${esc(item.role)}</td>`
-    + `<td>${esc(fmtTime(Date.parse(item.createdAt)))}</td><td><form method="post" action="/token-revoke">`
+    + `<td>${esc(fmtTime(Date.parse(item.createdAt)))}</td><td><form method="post" action="/token-revoke">${csrfInput(csrf)}`
     + `<input type="hidden" name="id" value="${esc(item.id)}"><button class="btn gray" type="submit">Отозвать</button></form></td></tr>`).join("")
     || `<tr><td colspan="4" class="muted">Дополнительных токенов нет</td></tr>`;
   return `<div class="settings-group token-access-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Ограниченные токены</span>`
     + `<h3>Роли MCP-доступа</h3><p>Reader читает данные, editor также изменяет файлы, operator запускает команды, удаление и бэкапы.</p></div></div>`
-    + `<form class="version-form" method="post" action="/token-create"><label>Название</label><input name="name" maxlength="80" required>`
+    + `<form class="version-form" method="post" action="/token-create">${csrfInput(csrf)}<label>Название</label><input name="name" maxlength="80" required>`
     + `<label>Роль</label><select name="role"><option value="reader">Reader</option><option value="editor">Editor</option><option value="operator">Operator</option></select>`
     + `<button class="btn" type="submit">Создать токен</button></form><div class="panel"><table><thead><tr><th>Название</th><th>Роль</th><th>Создан</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
-function deployOperationsHtml(): string {
+function deployOperationsHtml(csrf: string): string {
   const host = hostStatus();
   const runner = host.runner && typeof host.runner === "object" ? host.runner as Record<string, unknown> : {};
   const runnerOk = runner.active === "active" && runner.enabled === "enabled";
@@ -801,7 +822,7 @@ function deployOperationsHtml(): string {
   return `<div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">Диагностика</span><h3>Хостовый runner</h3>`
     + `<p>${runnerOk ? "Runner установлен, включён и готов принимать запросы." : "Runner не подтверждён. Запустите актуальный install.sh и проверьте systemd-unit."}</p></div></div>`
     + `<div class="version-deploy-status ${runnerOk ? "success" : "error"}"><i></i><div><b>${runnerOk ? "Runner готов" : "Runner недоступен"}</b><p>Статус обновлён ${esc(fmtTime(Date.parse(String(host.updatedAt || ""))))}</p></div></div>`
-    + `<form class="version-form" method="post" action="/version-preflight"><label>Версия для проверки</label><input name="version" placeholder="26.8.1.786" required>`
+    + `<form class="version-form" method="post" action="/version-preflight">${csrfInput(csrf)}<label>Версия для проверки</label><input name="version" placeholder="26.8.1.786" required>`
     + `<button class="btn gray" type="submit">Проверить релиз</button></form>`
     + (preflight.state ? `<p class="muted"><b>${esc(String(preflight.version || ""))}:</b> ${esc(String(preflight.message || preflight.state))}</p>` : "")
     + `</div><div class="settings-group"><div class="settings-group-head"><div><span class="settings-group-kicker">История deploy</span><h3>Последние операции</h3></div></div>`
@@ -848,7 +869,7 @@ function monitoringPage(user: string): string {
     + operationsMonitoringHtml() + `</div>`);
 }
 
-function settingsPage(url: URL, user: string, generated?: GeneratedSecret): string {
+function settingsPage(url: URL, user: string, csrf: string, generated?: GeneratedSecret): string {
   let flash = generated ? generatedSecretToast(generated) : "";
   if (!generated && url.searchParams.has("saved")) {
     flash = toast("Настройка сохранена.", "success");
@@ -889,7 +910,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
 
     let editor: string;
     if (item.mode === "generated-secret") {
-      editor = `<form class="inline" method="post" action="/settings">`
+      editor = `<form class="inline" method="post" action="/settings">` + csrfInput(csrf)
         + `<input type="hidden" name="key" value="${esc(item.key)}">`
         + `<button class="btn" type="submit" name="action" value="generate">Сгенерировать новый</button>`
         + `${resetBtn}</form>`;
@@ -899,7 +920,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
       const placeholder = item.mode === "external-secret"
         ? "Вставьте новый секрет"
         : "Отредактируйте текущее значение";
-      editor = `<form class="inline" method="post" action="/settings">`
+      editor = `<form class="inline" method="post" action="/settings">` + csrfInput(csrf)
         + `<input type="hidden" name="key" value="${esc(item.key)}">`
         + `<input type="${inputType}" name="value"${value} placeholder="${placeholder}">`
         + `<button class="btn" type="submit" name="action" value="save">Сохранить</button>${resetBtn}</form>`;
@@ -909,16 +930,14 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
       `<tr><td style="width:210px"><div class="setting-name"><b>${esc(item.key)}</b>${badge}</div>`
       + `<div class="hint">${esc(item.label)}</div></td>`
       + `<td>${editor}`
-      + `<form id="reset-${esc(item.key)}" method="post" action="/settings">`
+      + `<form id="reset-${esc(item.key)}" method="post" action="/settings">` + csrfInput(csrf)
       + `<input type="hidden" name="key" value="${esc(item.key)}">`
       + `<input type="hidden" name="action" value="reset"></form>`
       + `<div class="hint">${esc(item.hint)}</div></td></tr>`,
     );
   }
 
-  const s3Enabled = ["1", "true", "yes", "on"].includes(
-    (process.env.S3_ENABLED || "false").trim().toLowerCase(),
-  );
+  const s3Enabled = settings.s3Enabled();
   let s3Endpoint = process.env.S3_ENDPOINT || "—";
   try {
     const parsed = new URL(s3Endpoint);
@@ -1032,13 +1051,13 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
       ? `<div class="s3-actions-grid">`
         + `<article class="s3-action-card"><div class="s3-action-icon">◉</div><h4>Проверка подключения</h4>`
         + `<p>Проверит endpoint, ключи, bucket и права на чтение, запись и удаление.</p>`
-        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="check">Проверить подключение</button></form></article>`
+        + `<form method="post" action="/s3-action">${csrfInput(csrf)}<button class="btn gray" name="action" value="check">Проверить подключение</button></form></article>`
         + `<article class="s3-action-card featured"><div class="s3-action-icon">↻</div><h4>Полная синхронизация</h4>`
         + `<p>Обработает очередь и сразу сверит локальную рабочую копию с объектами S3.</p>`
-        + `<form method="post" action="/s3-action"><button class="btn" name="action" value="sync">Синхронизировать сейчас</button></form></article>`
+        + `<form method="post" action="/s3-action">${csrfInput(csrf)}<button class="btn" name="action" value="sync">Синхронизировать сейчас</button></form></article>`
         + `<article class="s3-action-card"><div class="s3-action-icon">↓</div><h4>Восстановление файлов</h4>`
         + `<p>Скачает только отсутствующие локально файлы, не перезаписывая существующие.</p>`
-        + `<form method="post" action="/s3-action"><button class="btn gray" name="action" value="recover">Восстановить отсутствующие</button></form></article>`
+        + `<form method="post" action="/s3-action">${csrfInput(csrf)}<button class="btn gray" name="action" value="recover">Восстановить отсутствующие</button></form></article>`
         + `</div>`
       : `<div class="s3-disabled"><b>S3-хранилище отключено</b>`
         + `<p>Установите S3_ENABLED=true и заполните обязательные параметры в .env, чтобы открыть ручные операции.</p></div>`)
@@ -1063,7 +1082,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `<div class="settings-group"><div class="settings-group-head"><div>`
     + `<span class="settings-group-kicker">Обновление</span><h3>Выберите опубликованный релиз</h3>`
     + `<p>Панель создаёт только подписанный запрос. Отдельный хостовый runner запускает deploy.sh, проверяет Cosign, readiness и выполняет rollback при ошибке.</p>`
-    + `</div></div><form class="version-form" method="post" action="/version-update" data-version-form>`
+    + `</div></div><form class="version-form" method="post" action="/version-update" data-version-form>${csrfInput(csrf)}`
     + `<label for="version-select">Версия</label><select id="version-select" name="version" data-version-select disabled>`
     + `<option>Загрузка списка релизов…</option></select>`
     + `<button class="btn" type="submit" data-version-submit disabled>Установить версию</button></form>`
@@ -1072,7 +1091,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
     + `<span class="settings-group-kicker">Статус обновления</span><h3>Последняя операция</h3></div></div>`
     + `<div class="version-deploy-status ${esc(deployState)}"><i></i><div><b>${esc(deployMessage)}</b>`
     + `<p>${deployVersion ? `Версия ${esc(deployVersion)} · ` : ""}${esc(deployUpdated)}</p></div></div></div>`
-    + deployOperationsHtml() + `</div>`;
+    + deployOperationsHtml(csrf) + `</div>`;
 
   const panels = SETTING_SECTIONS.map((section) =>
     `<section class="settings-panel" id="settings-${section.id}" role="tabpanel" `
@@ -1082,7 +1101,7 @@ function settingsPage(url: URL, user: string, generated?: GeneratedSecret): stri
         + `<p>${esc(section.description)}</p></div>`)
     + (section.id === "storage" ? storageContent
       : section.id === "versions" ? versionContent
-      : section.id === "access" ? `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>${tokenManagementHtml()}`
+      : section.id === "access" ? `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>${tokenManagementHtml(csrf)}`
       : `<div class="panel"><table><tbody>${rows[section.id].join("")}</tbody></table></div>`)
     + `</section>`,
   ).join("");
@@ -1183,7 +1202,7 @@ async function route(req: Request): Promise<Response> {
 `
         + `<b>Панель:</b> NoVate MCP
 `
-        + `<b>Telegram ID:</b> <code>${tgEsc(sub)}</code>
+        + `<b>Telegram ID:</b> <code>${esc(sub)}</code>
 `
         + `<b>Причина:</b> пользователь отсутствует в списке разрешённых.`);
       return redirect("/login?err=denied", { "Set-Cookie": clearState });
@@ -1197,9 +1216,9 @@ async function route(req: Request): Promise<Response> {
     tgNotify(`🔐 <b>Выполнен вход в панель</b>
 
 `
-      + `<b>Пользователь:</b> ${tgEsc(name)}
+      + `<b>Пользователь:</b> ${esc(name)}
 `
-      + `<b>Telegram ID:</b> <code>${tgEsc(sub)}</code>`);
+      + `<b>Telegram ID:</b> <code>${esc(sub)}</code>`);
     return redirectCookies(safeReturnTo(saved.returnTo), [
       clearState,
       cookieStr(COOKIE_NAME, session, COOKIE_TTL),
@@ -1249,7 +1268,7 @@ async function route(req: Request): Promise<Response> {
     }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
   }
 
-  if (method === "GET" && path === "/") return html(indexPage(url, session.name));
+  if (method === "GET" && path === "/") return html(indexPage(url, session.name, csrfToken(session.uid)));
 
   if (method === "GET" && path.startsWith("/projects/")) {
     let rel = "";
@@ -1274,8 +1293,8 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === "POST" && path === "/delete-project") {
-    if (!isSameOriginPost(req)) return redirect("/?error=project-origin");
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const name = String(form.get("project") || "");
     if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
       return redirect("/?error=project-delete");
@@ -1294,8 +1313,8 @@ async function route(req: Request): Promise<Response> {
       }), "utf8");
       tgNotify(`🗑️ <b>Проект удалён</b>
 
-<b>Проект:</b> <code>${tgEsc(name)}</code>
-<b>Пользователь:</b> ${tgEsc(session.name)}
+<b>Проект:</b> <code>${esc(name)}</code>
+<b>Пользователь:</b> ${esc(session.name)}
 <i>Запущена S3-сверка.</i>`);
       return redirect("/?deleted=" + encodeURIComponent(name));
     } catch (err) {
@@ -1353,9 +1372,10 @@ async function route(req: Request): Promise<Response> {
     });
   }
 
-  if (method === "GET" && path === "/backups") return html(backupsPage(url, session.name));
+  if (method === "GET" && path === "/backups") return html(backupsPage(url, session.name, csrfToken(session.uid)));
 
   if (method === "POST" && path === "/backup-now") {
+    if (!csrfOk(req, await req.formData(), session)) return csrfRejected();
     // Файл-триггер для сервиса бэкапов (он следит за /config/backup-now)
     try {
       writeFileSync(`${CONFIG_DIR}/backup-now`, String(Date.now()), "utf8");
@@ -1374,6 +1394,7 @@ async function route(req: Request): Promise<Response> {
     const tempDir = mkdtempSync(join(os.tmpdir(), "novate-backup-upload-"));
     try {
       const form = await req.formData();
+      if (!csrfOk(req, form, session)) return csrfRejected();
       const file = form.get("backup");
       if (!(file instanceof File) || !file.size) {
         return redirect("/backups?upload-error=" + encodeURIComponent("Выберите непустой файл бэкапа."));
@@ -1407,11 +1428,11 @@ async function route(req: Request): Promise<Response> {
       tgNotify(`📥 <b>Бэкап загружен</b>
 
 `
-        + `<b>Файл:</b> <code>${tgEsc(name)}</code>
+        + `<b>Файл:</b> <code>${esc(name)}</code>
 `
         + `<b>Проверка:</b> пройдена успешно
 `
-        + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
+        + `<b>Пользователь:</b> ${esc(session.name)}`);
       return redirect("/backups?uploaded=1");
     } catch (err) {
       console.error("Не удалось загрузить бэкап:", err);
@@ -1423,6 +1444,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === "POST" && path === "/backup-verify") {
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const file = String(form.get("file") || "");
     if (!BACKUP_NAME_RE.test(file)) return redirect("/backups?verify-error=invalid");
     const target = resolve(BACKUP_DIR, file);
@@ -1443,6 +1465,7 @@ async function route(req: Request): Promise<Response> {
   if (method === "POST" && path === "/restore") {
     // Запрос на восстановление: файл-триггер с ИМЕНЕМ архива для сервиса backup
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const file = String(form.get("file") || "");
     const project = String(form.get("project") || "").trim();
     if (!ARCHIVE_FILE_RE.test(file)) return redirect("/backups");
@@ -1454,9 +1477,9 @@ async function route(req: Request): Promise<Response> {
       tgNotify(`♻️ <b>Запущено восстановление</b>
 
 `
-        + `<b>Архив:</b> <code>${tgEsc(file)}</code>
+        + `<b>Архив:</b> <code>${esc(file)}</code>
 `
-        + `<b>Пользователь:</b> ${tgEsc(session.name)}
+        + `<b>Пользователь:</b> ${esc(session.name)}
 `
         + `<i>Перед восстановлением будет создана страховочная копия.</i>`);
     } catch (err) {
@@ -1487,6 +1510,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === "POST" && path === "/s3-action") {
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const action = String(form.get("action") || "");
     if (!["check", "sync", "recover"].includes(action)) {
       return redirect("/settings?tab=storage");
@@ -1500,21 +1524,24 @@ async function route(req: Request): Promise<Response> {
 
   if (method === "POST" && path === "/token-create") {
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const name = String(form.get("name") || "").trim();
     const role = String(form.get("role") || "reader");
     if (!name || !["reader", "editor", "operator"].includes(role)) return redirect("/settings?tab=access");
     const token = createManagedToken(name, role as "reader" | "editor" | "operator", session.name);
-    return html(settingsPage(new URL("/settings?tab=access", url), session.name, { key: `MCP_TOKEN_${role}`, value: token.token }));
+    return html(settingsPage(new URL("/settings?tab=access", url), session.name, csrfToken(session.uid), { key: `MCP_TOKEN_${role}`, value: token.token }));
   }
 
   if (method === "POST" && path === "/token-revoke") {
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     revokeManagedToken(String(form.get("id") || ""), session.name);
     return redirect("/settings?tab=access");
   }
 
   if (method === "POST" && path === "/version-preflight") {
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const version = String(form.get("version") || "").trim();
     if (!await versionCanBeDeployed(version)) return redirect("/settings?tab=versions&version-error=version");
     writeFileSync(`${CONFIG_DIR}/preflight-request.json`, JSON.stringify({ version, requested_at: new Date().toISOString(), requested_by: session.uid }), { encoding: "utf8", mode: 0o600 });
@@ -1531,8 +1558,8 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === "POST" && path === "/version-update") {
-    if (!isSameOriginPost(req)) return redirect("/settings?tab=versions&version-error=origin");
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const version = String(form.get("version") || "").trim();
     try {
       if (!await versionCanBeDeployed(version)) return redirect("/settings?tab=versions&version-error=version");
@@ -1548,9 +1575,9 @@ async function route(req: Request): Promise<Response> {
       tgNotify(`🚀 <b>Запрошено обновление NoVate MCP</b>
 
 `
-        + `<b>Версия:</b> <code>${tgEsc(version)}</code>
+        + `<b>Версия:</b> <code>${esc(version)}</code>
 `
-        + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
+        + `<b>Пользователь:</b> ${esc(session.name)}`);
       return redirect("/settings?tab=versions&version-requested=1");
     } catch (err) {
       console.error("Не удалось создать deploy-запрос:", err);
@@ -1561,10 +1588,11 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === "GET" && path === "/monitoring") return html(monitoringPage(session.name));
-  if (method === "GET" && path === "/settings") return html(settingsPage(url, session.name));
+  if (method === "GET" && path === "/settings") return html(settingsPage(url, session.name, csrfToken(session.uid)));
 
   if (method === "POST" && path === "/settings") {
     const form = await req.formData();
+    if (!csrfOk(req, form, session)) return csrfRejected();
     const key = String(form.get("key") || "");
     const action = String(form.get("action") || "");
     const item = EDITABLE.find((entry) => entry.key === key);
@@ -1575,11 +1603,11 @@ async function route(req: Request): Promise<Response> {
       tgNotify(`⚙️ <b>Настройка сброшена</b>
 
 `
-        + `<b>Параметр:</b> <code>${tgEsc(key)}</code>
+        + `<b>Параметр:</b> <code>${esc(key)}</code>
 `
         + `<b>Источник:</b> .env
 `
-        + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
+        + `<b>Пользователь:</b> ${esc(session.name)}`);
       return redirect(`/settings?tab=${item.section}&reset=1`);
     }
     if (action === "generate" && item.mode === "generated-secret") {
@@ -1589,14 +1617,14 @@ async function route(req: Request): Promise<Response> {
       tgNotify(`🔑 <b>Создан новый секрет</b>
 
 `
-        + `<b>Параметр:</b> <code>${tgEsc(key)}</code>
+        + `<b>Параметр:</b> <code>${esc(key)}</code>
 `
-        + `<b>Пользователь:</b> ${tgEsc(session.name)}
+        + `<b>Пользователь:</b> ${esc(session.name)}
 `
         + `<i>Значение секрета в Telegram не отправляется.</i>`);
       const settingsUrl = new URL(url);
       settingsUrl.searchParams.set("tab", item.section);
-      return html(settingsPage(settingsUrl, session.name, { key, value }));
+      return html(settingsPage(settingsUrl, session.name, csrfToken(session.uid), { key, value }));
     }
     if (action === "save" && item.mode !== "generated-secret") {
       const value = String(form.get("value") || "").trim();
@@ -1606,9 +1634,9 @@ async function route(req: Request): Promise<Response> {
         tgNotify(`⚙️ <b>Настройка изменена</b>
 
 `
-          + `<b>Параметр:</b> <code>${tgEsc(key)}</code>
+          + `<b>Параметр:</b> <code>${esc(key)}</code>
 `
-          + `<b>Пользователь:</b> ${tgEsc(session.name)}`);
+          + `<b>Пользователь:</b> ${esc(session.name)}`);
       }
       return redirect(`/settings?tab=${item.section}&saved=1`);
     }

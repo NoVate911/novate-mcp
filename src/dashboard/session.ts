@@ -1,14 +1,17 @@
 import {
-  createCipheriv, createDecipheriv, randomBytes, scryptSync,
+  createCipheriv, createDecipheriv, createHmac, randomBytes, scryptSync, timingSafeEqual,
 } from "node:crypto";
 
 const KDF_CONTEXT = "novate-mcp/session-signing-key/v1";
+// Отдельный контекст для CSRF: токен формы никогда не совпадёт с ключом сессии.
+const CSRF_CONTEXT = "novate-mcp/csrf-token/v1";
 const NONCE_BYTES = 12;
 const AUTH_TAG_BYTES = 16;
 
 type SessionRecord = Record<string, unknown>;
 
-function b64url(buf: Buffer): string {
+/** base64url без выравнивания. Единственная реализация в проекте. */
+export function b64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -61,5 +64,23 @@ export function createSessionCodec(getSecret: () => string) {
     }
   };
 
-  return { packSigned, unpackSigned };
+  /**
+   * CSRF-токен формы: HMAC от идентификатора пользователя на ключе,
+   * выведенном из SESSION_SECRET. Значение недоступно сторонним сайтам,
+   * поэтому годится как synchronizer token.
+   * Проверка по Origin здесь работать не может: Caddy отдаёт
+   * Referrer-Policy: no-referrer, и браузер присылает Origin: null.
+   */
+  const csrfToken = (uid: string): string =>
+    b64url(createHmac("sha256", key()).update(`${CSRF_CONTEXT}|${uid}`).digest());
+
+  const csrfMatches = (uid: string, supplied: string): boolean => {
+    if (!uid || !supplied) return false;
+    const expected = Buffer.from(csrfToken(uid), "utf8");
+    const actual = Buffer.from(supplied, "utf8");
+    if (expected.length !== actual.length) return false;
+    return timingSafeEqual(expected, actual);
+  };
+
+  return { packSigned, unpackSigned, csrfToken, csrfMatches };
 }

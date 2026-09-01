@@ -68,3 +68,13 @@ export function clearOverride(key: string): void {
     writeFileSync(FILE, JSON.stringify(data, null, 2), "utf8");
   }
 }
+
+/** Единый разбор булевых флагов окружения. */
+export function envFlag(name: string, fallback = "false"): boolean {
+  return ["1", "true", "yes", "on"].includes((process.env[name] || fallback).trim().toLowerCase());
+}
+
+/** S3 включён? Одна точка истины для панели и мониторинга. */
+export function s3Enabled(): boolean {
+  return envFlag("S3_ENABLED");
+}

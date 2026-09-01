@@ -50,3 +50,26 @@ describe("AES-256-GCM session codec", () => {
     }
   });
 });
+
+describe("CSRF form tokens", () => {
+  test("token is stable per user and rejects foreign or malformed tokens", () => {
+    const codec = createSessionCodec(() => "a".repeat(64));
+    const token = codec.csrfToken("42");
+    expect(token.length).toBeGreaterThan(20);
+    expect(codec.csrfToken("42")).toBe(token);
+    expect(codec.csrfMatches("42", token)).toBe(true);
+    expect(codec.csrfMatches("43", token)).toBe(false);
+    expect(codec.csrfMatches("42", "")).toBe(false);
+    expect(codec.csrfMatches("", token)).toBe(false);
+    expect(codec.csrfMatches("42", token + "x")).toBe(false);
+  });
+
+  test("secret rotation invalidates issued tokens", () => {
+    let secret = "a".repeat(64);
+    const codec = createSessionCodec(() => secret);
+    const before = codec.csrfToken("42");
+    secret = "b".repeat(64);
+    expect(codec.csrfMatches("42", before)).toBe(false);
+    expect(codec.csrfMatches("42", codec.csrfToken("42"))).toBe(true);
+  });
+});

@@ -50,6 +50,23 @@ document.querySelectorAll<HTMLButtonElement>("[data-copy-secret]").forEach((butt
   });
 });
 
+// Бургер-меню: на узких экранах навигация скрыта и открывается кнопкой.
+const navToggle = document.querySelector<HTMLButtonElement>("[data-nav-toggle]");
+const navPanel = document.querySelector<HTMLElement>("[data-nav]");
+if (navToggle && navPanel) {
+  const setOpen = (open: boolean): void => {
+    navPanel.classList.toggle("open", open);
+    navToggle.setAttribute("aria-expanded", String(open));
+  };
+  navToggle.addEventListener("click", () => setOpen(!navPanel.classList.contains("open")));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setOpen(false);
+  });
+  window.addEventListener("resize", () => {
+    if (window.innerWidth > 720) setOpen(false);
+  });
+}
+
 // Поиск, фильтрация и сортировка проектов/файлов без перезагрузки страницы.
 document.querySelectorAll<HTMLElement>("[data-filter-root]").forEach((root) => {
   const controls = root.querySelector<HTMLElement>("[data-filter-controls]");
@@ -117,17 +134,15 @@ document.querySelectorAll<HTMLInputElement>("[data-auto-submit-file]").forEach((
 document.querySelectorAll<HTMLElement>(".settings-tabs").forEach((tabList) => {
   const tabs = Array.from(tabList.querySelectorAll<HTMLButtonElement>("[data-settings-tab]"));
   const panels = Array.from(document.querySelectorAll<HTMLElement>("[data-settings-panel]"));
-  const activate = (id: string, updateUrl = true): void => {
+  const activate = (id: string): void => {
     if (!tabs.some((tab) => tab.dataset.settingsTab === id)) return;
     tabs.forEach((tab) => tab.setAttribute(
       "aria-selected", String(tab.dataset.settingsTab === id),
     ));
     panels.forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== id; });
-    if (updateUrl) {
-      const url = new URL(window.location.href);
-      url.searchParams.set("tab", id);
-      history.replaceState(null, "", url);
-    }
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", id);
+    history.replaceState(null, "", url);
   };
 
   tabs.forEach((tab, index) => {

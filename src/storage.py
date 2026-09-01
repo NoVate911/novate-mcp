@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping, Protocol
 from urllib.parse import urlparse
 
+import settings
+
 FileState = tuple[int, int]
 Snapshot = dict[str, FileState]
 
@@ -29,6 +31,11 @@ MANDATORY_EXCLUDES = (
 
 class StorageError(RuntimeError):
     """Безопасная для показа ошибка storage без credentials."""
+
+
+def _next_retry_at(attempts: int) -> float:
+    """Экспоненциальная задержка повтора: 30с, 60с, 120с ... но не больше часа."""
+    return time.time() + min(30 * (2 ** min(attempts - 1, 7)), 3600)
 
 
 class S3Client(Protocol):
@@ -520,9 +527,7 @@ class S3Storage(S3StorageCore):
         if entry is not None:
             entry["attempts"] = int(entry.get("attempts", 0)) + 1
             entry["last_error"] = str(exc)
-            entry["next_retry"] = time.time() + min(
-                30 * (2 ** min(entry["attempts"] - 1, 7)), 3600
-            )
+            entry["next_retry"] = _next_retry_at(entry["attempts"])
             self._save_state()
         self._write_status(connection="error", last_error=str(exc))
 
@@ -686,9 +691,7 @@ class S3Storage(S3StorageCore):
                     if current is not None:
                         current["attempts"] = int(current.get("attempts", 0)) + 1
                         current["last_error"] = str(exc)
-                        current["next_retry"] = time.time() + min(
-                            30 * (2 ** min(current["attempts"] - 1, 7)), 3600
-                        )
+                        current["next_retry"] = _next_retry_at(current["attempts"])
                     first_error = first_error or exc
                 progress_current += 1
                 if progress is not None:
@@ -880,7 +883,7 @@ def create_storage(
     restore: bool = True,
 ) -> Storage:
     env = environ if environ is not None else os.environ
-    enabled = env.get("S3_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    enabled = settings.is_truthy(env.get("S3_ENABLED", "false"))
     if not enabled:
         return LocalStorage(root)
     required = ("S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_BUCKET", "S3_REGION")

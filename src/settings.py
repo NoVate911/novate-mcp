@@ -33,6 +33,14 @@ DEFAULTS = {
     "MONITOR_DISK_FREE_PERCENT": "10",
 }
 
+# Значения, которые считаются «включено» для булевых настроек
+TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def is_truthy(value):
+    """Единый разбор булевых значений (дублировался в storage.py и backup.py)."""
+    return str(value or "").strip().lower() in TRUTHY
+
 
 def read_overrides():
     """Словарь переопределений из панели. Ошибки чтения = пустой словарь."""
