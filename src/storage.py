@@ -33,6 +33,39 @@ class StorageError(RuntimeError):
     """Безопасная для показа ошибка storage без credentials."""
 
 
+# Стандартные пути системного хранилища корневых сертификатов.
+SYSTEM_CA_BUNDLES = (
+    "/etc/ssl/certs/ca-certificates.crt",   # Debian, Ubuntu
+    "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL, CentOS, Fedora
+    "/etc/ssl/ca-bundle.pem",               # openSUSE
+    "/etc/ssl/cert.pem",                    # Alpine, BSD
+)
+
+
+def resolve_ca_bundle(environ: Mapping[str, str] | None = None) -> str | None:
+    """Путь к доверенным корневым сертификатам для S3.
+
+    boto3 по умолчанию берёт собственный набор botocore/cacert.pem и
+    игнорирует системное хранилище. Набор botocore меньше, и у части
+    провайдеров (например, Рег.ру) цепочка заканчивается корнем, которого
+    в нём нет, — тогда любой запрос падает с SSLError. Системное хранилище
+    полнее и обновляется через ca-certificates, поэтому предпочитаем его.
+
+    S3_CA_BUNDLE переопределяет выбор вручную (например, для частного CA).
+    None = оставить поведение botocore по умолчанию.
+    """
+    env = environ if environ is not None else os.environ
+    explicit = env.get("S3_CA_BUNDLE", "").strip()
+    if explicit:
+        if not Path(explicit).is_file():
+            raise StorageError("S3_CA_BUNDLE указывает на несуществующий файл")
+        return explicit
+    for candidate in SYSTEM_CA_BUNDLES:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
 def _next_retry_at(attempts: int) -> float:
     """Экспоненциальная задержка повтора: 30с, 60с, 120с ... но не больше часа."""
     return time.time() + min(30 * (2 ** min(attempts - 1, 7)), 3600)
@@ -175,6 +208,7 @@ class S3StorageCore(Storage):
             client = boto3.client(
                 "s3",
                 endpoint_url=self.endpoint,
+                verify=resolve_ca_bundle(),
                 aws_access_key_id=access_key,
                 aws_secret_access_key=secret_key,
                 region_name=region,
@@ -203,7 +237,13 @@ class S3StorageCore(Storage):
         except StorageError:
             raise
         except Exception as exc:
-            raise StorageError(f"{action}: ошибка S3 ({self._error_code(exc)})") from exc
+            code = self._error_code(exc)
+            if code == "SSLError":
+                raise StorageError(
+                    f"{action}: не удалось проверить TLS-сертификат S3. "
+                    "Обновите ca-certificates или укажите S3_CA_BUNDLE"
+                ) from exc
+            raise StorageError(f"{action}: ошибка S3 ({code})") from exc
 
     def key(self, rel: str) -> str:
         value = rel.replace("\\", "/").strip("/")

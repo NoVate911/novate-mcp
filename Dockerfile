@@ -6,7 +6,10 @@ FROM python:3.12-slim AS mcp
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastmcp boto3
+# Версии закреплены: плавающий boto3 меняет набор корневых сертификатов
+# и поведение TLS между пересборками без изменения кода.
+# Системный ca-certificates входит в python:3.12-slim и нужен storage.py.
+RUN pip install --no-cache-dir "fastmcp==4.0.0" "boto3==1.43.85"
 
 # Работаем НЕ от root — отдельный пользователь
 RUN useradd --create-home appuser \

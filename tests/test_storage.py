@@ -9,7 +9,8 @@ import time
 import unittest
 from pathlib import Path
 
-from storage import LocalStorage, S3Storage, StorageError, create_storage
+from storage import (LocalStorage, S3Storage, StorageError, create_storage,
+                     resolve_ca_bundle)
 
 
 class FakeS3:
@@ -306,6 +307,30 @@ class McpToolIntegrationTests(unittest.TestCase):
             time.sleep(0.03)
         else: self.fail(status)
         self.assertEqual(self.fake.objects["projects/bg/result.txt"], b"done")
+
+
+class CaBundleTest(unittest.TestCase):
+    """boto3 игнорирует системные CA, поэтому путь выбираем явно."""
+
+    def test_explicit_override_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "custom.pem"
+            bundle.write_text("", encoding="utf-8")
+            self.assertEqual(resolve_ca_bundle({"S3_CA_BUNDLE": str(bundle)}), str(bundle))
+            self.assertEqual(resolve_ca_bundle({"S3_CA_BUNDLE": f"  {bundle}  "}), str(bundle))
+
+    def test_missing_override_is_rejected(self):
+        with self.assertRaises(StorageError):
+            resolve_ca_bundle({"S3_CA_BUNDLE": "/nope/absent-ca.pem"})
+
+    def test_falls_back_to_existing_system_bundle(self):
+        found = resolve_ca_bundle({})
+        if found is not None:
+            self.assertTrue(Path(found).is_file())
+            self.assertIn(found, resolve_ca_bundle.__globals__["SYSTEM_CA_BUNDLES"])
+
+    def test_blank_override_falls_back(self):
+        self.assertEqual(resolve_ca_bundle({"S3_CA_BUNDLE": "   "}), resolve_ca_bundle({}))
 
 
 if __name__ == "__main__": unittest.main()
