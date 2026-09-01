@@ -2,7 +2,7 @@
 # GitHub Actions собирает все (matrix), на сервере — только pull.
 
 # ===== MCP-сервер (Python + FastMCP) =====
-FROM python:3.12-slim AS mcp
+FROM python:3.14-slim AS mcp
 
 WORKDIR /app
 
@@ -56,7 +56,7 @@ CMD ["bun", "index.ts"]
 
 
 # ===== Сервис бэкапов (Python, только stdlib) =====
-FROM python:3.12-slim AS backup
+FROM python:3.14-slim AS backup
 
 WORKDIR /app
 
